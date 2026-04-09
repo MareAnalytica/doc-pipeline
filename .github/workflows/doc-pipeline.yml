@@ -7,6 +7,8 @@ on:
         required: true
       WIKIJS_API_KEY:
         required: true
+      REPO_ACCESS_TOKEN:
+        required: false
 
 jobs:
   detect-and-generate:
@@ -23,6 +25,7 @@ jobs:
         with:
           repository: MareAnalytica/doc-pipeline
           path: .doc-pipeline
+          token: ${{ secrets.REPO_ACCESS_TOKEN || github.token }}
 
       - name: Setup Go
         uses: actions/setup-go@v5
