@@ -4,9 +4,9 @@ on:
   workflow_call:
     secrets:
       OPENAI_API_KEY:
-        required: true
+        required: false
       WIKIJS_API_KEY:
-        required: true
+        required: false
 
 jobs:
   detect-and-generate:
