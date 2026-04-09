@@ -167,11 +167,12 @@ def scan_all_packages(docs_dir: Path) -> list[str]:
             pass
 
     # --- Python: one module per .md file ---
+    # Keep the original underscore-based filename as the package key
+    # (e.g., hydra_adapter_checkpoint, not hydra.adapter.checkpoint)
     python_dir = docs_dir / "python"
     if python_dir.is_dir():
         for md_file in sorted(python_dir.glob("*.md")):
-            module_name = md_file.stem.replace("_", ".")
-            packages.append(f"python/{module_name}")
+            packages.append(f"python/{md_file.stem}")
 
     # --- Protobuf: one group per .json file ---
     proto_dir = docs_dir / "proto"
@@ -278,22 +279,51 @@ def read_source_for_package(source_dir: Path, package: str) -> str:
     # Direct path
     candidates.append(source_dir / package)
 
-    # For Python: convert dots to path separators and look for .py file
+    # For Python: map underscored doc filename to source path
+    # e.g., hydra_adapter_checkpoint -> src/hydra_adapter/checkpoint.py
+    # Strategy: try progressively splitting from the right to find the directory
     if lang_prefix == "python" and pkg_name:
-        # hydra.adapter.checkpoint -> hydra_adapter/checkpoint
-        parts = pkg_name.replace(".", "/").replace("_", "/").split("/")
-        # Try as a directory
-        candidates.append(source_dir / "/".join(parts))
-        candidates.append(source_dir / "src" / "/".join(parts))
-        # Try as a single .py file (last part is the module)
-        if len(parts) > 1:
-            dir_path = "/".join(parts[:-1])
-            candidates.append(source_dir / dir_path)
-            candidates.append(source_dir / "src" / dir_path)
-        # Also try underscored version
-        underscored = pkg_name.replace(".", "_")
-        candidates.append(source_dir / underscored)
-        candidates.append(source_dir / "src" / underscored.replace("_", "/"))
+        # Try splitting at each underscore position to find dir/file.py
+        parts = pkg_name.split("_")
+        for split_idx in range(len(parts) - 1, 0, -1):
+            dir_name = "_".join(parts[:split_idx])
+            file_name = "_".join(parts[split_idx:])
+            candidates.append(source_dir / dir_name / f"{file_name}.py")
+            candidates.append(source_dir / "src" / dir_name / f"{file_name}.py")
+            # Also try the dir_name as a package directory
+            candidates.append(source_dir / dir_name)
+            candidates.append(source_dir / "src" / dir_name)
+        # Also try the whole name as a directory or file
+        candidates.append(source_dir / f"{pkg_name}.py")
+        candidates.append(source_dir / "src" / f"{pkg_name}.py")
+        candidates.append(source_dir / pkg_name)
+        candidates.append(source_dir / "src" / pkg_name)
+        # Try nested: hydra_adapter_connectors_lsports -> hydra_adapter/connectors/lsports.py
+        # by trying the first known directory then recursing
+        for root in [source_dir, source_dir / "src"]:
+            remaining = parts[:]
+            current = root
+            while remaining:
+                next_part = remaining.pop(0)
+                test_dir = current / next_part
+                # Try accumulating underscore segments into a directory name
+                for j in range(1, len(remaining) + 1):
+                    accumulated = "_".join([next_part] + remaining[:j-1])
+                    if (current / accumulated).is_dir():
+                        current = current / accumulated
+                        remaining = remaining[j-1:]
+                        break
+                else:
+                    if test_dir.is_dir():
+                        current = test_dir
+                    elif (current / f"{next_part}.py").is_file():
+                        candidates.append(current / f"{next_part}.py")
+                        break
+                    else:
+                        # Try remaining as filename
+                        rest = "_".join([next_part] + remaining)
+                        candidates.append(current / f"{rest}.py")
+                        break
 
     # For Go: try internal/ prefixed paths
     if lang_prefix == "go" and pkg_name:
