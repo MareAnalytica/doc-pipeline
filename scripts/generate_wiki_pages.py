@@ -496,7 +496,14 @@ async def publish_to_wikijs(
 # ---------------------------------------------------------------------------
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """Parse command-line arguments."""
+    """Parse command-line arguments.
+
+    API keys can be provided via CLI flags or environment variables.  The CLI
+    flag takes precedence; the env var is used as fallback.  This avoids the
+    shell-expansion issue seen in GitHub Actions reusable workflows where
+    ``$OPENAI_API_KEY`` in the ``run:`` block can resolve to an empty string
+    even though the secret is available in the ``env:`` context.
+    """
     parser = argparse.ArgumentParser(
         description=(
             "Generate human-readable Wiki.js pages from deterministic docs, "
@@ -530,19 +537,49 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--wikijs-api-key",
-        required=True,
-        help="Wiki.js API key for GraphQL mutations",
+        default="",
+        help="Wiki.js API key for GraphQL mutations (fallback: WIKIJS_API_KEY env var)",
     )
     parser.add_argument(
         "--openai-api-key",
-        required=True,
-        help="OpenAI API key for gpt-4o-mini",
+        default="",
+        help="OpenAI API key for gpt-4o-mini (fallback: OPENAI_API_KEY env var)",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+
+    # Resolve API keys: CLI arg -> env var -> empty string
+    args.openai_api_key = (
+        args.openai_api_key.strip()
+        or os.environ.get("OPENAI_API_KEY", "").strip()
+    )
+    args.wikijs_api_key = (
+        args.wikijs_api_key.strip()
+        or os.environ.get("WIKIJS_API_KEY", "").strip()
+    )
+
+    return args
 
 
 async def run(args: argparse.Namespace) -> None:
     """Execute the wiki page generation pipeline."""
+
+    # ---- Validate API keys up-front ----
+    if not args.openai_api_key:
+        print(
+            "WARNING: No OpenAI API key provided (--openai-api-key or "
+            "OPENAI_API_KEY env var). Skipping doc generation.",
+            file=sys.stderr,
+        )
+        return
+
+    if not args.wikijs_api_key:
+        print(
+            "WARNING: No Wiki.js API key provided (--wikijs-api-key or "
+            "WIKIJS_API_KEY env var). Skipping Wiki.js publishing.",
+            file=sys.stderr,
+        )
+        return
+
     changed_files = get_changed_files()
     if not changed_files:
         print("No changed files detected. Nothing to generate.")
