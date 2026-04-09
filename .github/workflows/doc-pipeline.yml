@@ -50,10 +50,38 @@ jobs:
         id: detect
         run: |
           HAS_GO=false; HAS_TS=false; HAS_PYTHON=false; HAS_PROTO=false; HAS_HELM=false
+          GO_SRC_ROOT="."; TS_SRC_ROOT="."; PY_SRC_ROOT="."
 
-          [ -f "go.mod" ] && HAS_GO=true
-          [ -f "tsconfig.json" ] && HAS_TS=true
-          ([ -f "pyproject.toml" ] || [ -f "setup.py" ] || [ -f "requirements.txt" ]) && HAS_PYTHON=true
+          # Check root AND common subdirectories for language marker files
+          for dir in . backend api frontend src app; do
+            if [ -f "$dir/go.mod" ]; then
+              HAS_GO=true
+              [ "$dir" != "." ] && GO_SRC_ROOT="$dir"
+            fi
+            if [ -f "$dir/tsconfig.json" ]; then
+              HAS_TS=true
+              [ "$dir" != "." ] && TS_SRC_ROOT="$dir"
+            fi
+            if [ -f "$dir/pyproject.toml" ] || [ -f "$dir/setup.py" ] || [ -f "$dir/requirements.txt" ]; then
+              HAS_PYTHON=true
+              [ "$dir" != "." ] && PY_SRC_ROOT="$dir"
+            fi
+          done
+
+          # Fallback: check for .py files directly if no marker found
+          if [ "$HAS_PYTHON" = "false" ]; then
+            if find . -name "*.py" -maxdepth 3 -not -path "*/venv/*" -not -path "*/__pycache__/*" -not -path "*/node_modules/*" | grep -q .; then
+              HAS_PYTHON=true
+              # Find the best source root (directory with the most .py files)
+              for candidate in app backend src api .; do
+                if [ -d "$candidate" ] && find "$candidate" -name "*.py" -maxdepth 2 | grep -q .; then
+                  PY_SRC_ROOT="$candidate"
+                  break
+                fi
+              done
+            fi
+          fi
+
           find . -name "*.proto" -maxdepth 3 | grep -q . && HAS_PROTO=true
           [ -f "Chart.yaml" ] && HAS_HELM=true
 
@@ -62,7 +90,10 @@ jobs:
           echo "has_python=$HAS_PYTHON" >> $GITHUB_OUTPUT
           echo "has_proto=$HAS_PROTO" >> $GITHUB_OUTPUT
           echo "has_helm=$HAS_HELM" >> $GITHUB_OUTPUT
-          echo "Detected: go=$HAS_GO ts=$HAS_TS python=$HAS_PYTHON proto=$HAS_PROTO helm=$HAS_HELM"
+          echo "go_src_root=$GO_SRC_ROOT" >> $GITHUB_OUTPUT
+          echo "ts_src_root=$TS_SRC_ROOT" >> $GITHUB_OUTPUT
+          echo "py_src_root=$PY_SRC_ROOT" >> $GITHUB_OUTPUT
+          echo "Detected: go=$HAS_GO($GO_SRC_ROOT) ts=$HAS_TS($TS_SRC_ROOT) python=$HAS_PYTHON($PY_SRC_ROOT) proto=$HAS_PROTO helm=$HAS_HELM"
 
       - name: Install Go doc tools
         if: steps.detect.outputs.has_go == 'true' || steps.detect.outputs.has_proto == 'true' || steps.detect.outputs.has_helm == 'true'
@@ -85,51 +116,94 @@ jobs:
         continue-on-error: true
         run: |
           mkdir -p docs/go
+          GO_ROOT="${{ steps.detect.outputs.go_src_root }}"
+          echo "Go source root: $GO_ROOT"
+          cd "$GO_ROOT"
           go version
           go mod download || true
-          # Try ./... first, then fall back to subdirectories
-          gomarkdoc ./... > docs/go/packages.md 2>/dev/null || true
-          if [ ! -s docs/go/packages.md ]; then
+
+          # Build exclude list: directories with only _test.go files (no source packages)
+          EXCLUDE_ARGS=""
+          while IFS= read -r dir; do
+            # Count non-test .go files
+            SRC_COUNT=$(find "$dir" -maxdepth 1 -name "*.go" ! -name "*_test.go" 2>/dev/null | wc -l)
+            if [ "$SRC_COUNT" -eq 0 ]; then
+              EXCLUDE_ARGS="$EXCLUDE_ARGS --exclude-dirs ./${dir}"
+              echo "Excluding test-only dir: $dir"
+            fi
+          done < <(find . -name "*.go" -exec dirname {} \; 2>/dev/null | sort -u | sed 's|^\./||')
+
+          # Try ./... first (with excludes), then fall back to subdirectories
+          gomarkdoc $EXCLUDE_ARGS ./... > "${GITHUB_WORKSPACE}/docs/go/packages.md" 2>/dev/null || true
+          if [ ! -s "${GITHUB_WORKSPACE}/docs/go/packages.md" ]; then
             for dir in ./internal/... ./cmd/... ./pkg/... ./src/...; do
               if ls ${dir%/...} 2>/dev/null | grep -q .; then
-                gomarkdoc "$dir" >> docs/go/packages.md 2>/dev/null || true
+                gomarkdoc $EXCLUDE_ARGS "$dir" >> "${GITHUB_WORKSPACE}/docs/go/packages.md" 2>/dev/null || true
               fi
             done
           fi
+          cd "${GITHUB_WORKSPACE}"
           echo "Go docs: $(wc -c < docs/go/packages.md 2>/dev/null || echo 0) bytes"
 
       - name: Install project Node dependencies
         if: steps.detect.outputs.has_ts == 'true'
         run: |
-          if [ -f "package-lock.json" ]; then
-            npm ci --ignore-scripts 2>/dev/null || npm install --ignore-scripts
-          elif [ -f "package.json" ]; then
-            npm install --ignore-scripts
-          fi
+          TS_ROOT="${{ steps.detect.outputs.ts_src_root }}"
+          # Install deps from whichever directory has the package.json
+          for check_dir in "$TS_ROOT" .; do
+            if [ -f "$check_dir/package-lock.json" ]; then
+              cd "$check_dir"
+              npm ci --ignore-scripts 2>/dev/null || npm install --ignore-scripts
+              cd "${GITHUB_WORKSPACE}"
+              break
+            elif [ -f "$check_dir/package.json" ]; then
+              cd "$check_dir"
+              npm install --ignore-scripts
+              cd "${GITHUB_WORKSPACE}"
+              break
+            fi
+          done
 
       - name: Generate TypeScript docs
         if: steps.detect.outputs.has_ts == 'true'
         continue-on-error: true
         run: |
           mkdir -p docs/ts
+          TS_ROOT="${{ steps.detect.outputs.ts_src_root }}"
+          cd "$TS_ROOT"
 
-          # Determine entry point: use src/ if it exists, otherwise use project root
-          ENTRY_POINT="src/"
-          [ ! -d "src" ] && ENTRY_POINT="."
+          # Collect all source directories that contain .ts/.tsx files.
+          # Next.js apps use app/, components/, hooks/, lib/ at root level
+          # rather than putting everything under src/.
+          ENTRY_POINTS=""
+          for candidate in src app components hooks lib pages; do
+            if [ -d "$candidate" ]; then
+              # Skip generated/auto-generated directories
+              TS_COUNT=$(find "$candidate" -name "*.ts" -o -name "*.tsx" 2>/dev/null | grep -v node_modules | grep -v generated | wc -l)
+              if [ "$TS_COUNT" -gt 0 ]; then
+                ENTRY_POINTS="$ENTRY_POINTS $candidate"
+              fi
+            fi
+          done
+          # Fallback: use current directory
+          [ -z "$ENTRY_POINTS" ] && ENTRY_POINTS="."
+
+          echo "TypeScript entry points: $ENTRY_POINTS"
 
           # --skipErrorChecking: bypass TS errors from CSS imports, deprecated options, etc.
           # --entryPointStrategy expand: recursively find all .ts/.tsx files in entry point
-          npx typedoc --json docs/ts/typedoc.json \
+          npx typedoc --json "${GITHUB_WORKSPACE}/docs/ts/typedoc.json" \
             --entryPointStrategy expand \
             --skipErrorChecking \
-            "$ENTRY_POINT" 2>&1 || true
+            $ENTRY_POINTS 2>&1 || true
 
           npx typedoc --plugin typedoc-plugin-markdown \
-            --out docs/ts/markdown \
+            --out "${GITHUB_WORKSPACE}/docs/ts/markdown" \
             --entryPointStrategy expand \
             --skipErrorChecking \
-            "$ENTRY_POINT" 2>&1 || true
+            $ENTRY_POINTS 2>&1 || true
 
+          cd "${GITHUB_WORKSPACE}"
           echo "TypeScript docs: $(find docs/ts -type f | wc -l) files, $(du -sh docs/ts 2>/dev/null | cut -f1) total"
 
       - name: Generate Python docs
@@ -137,13 +211,25 @@ jobs:
         continue-on-error: true
         run: |
           mkdir -p docs/python
+          PY_ROOT="${{ steps.detect.outputs.py_src_root }}"
 
-          # Find the source root (src/ or project root)
-          if [ -d "src" ] && find src -name "*.py" -maxdepth 3 | grep -q .; then
-            SRC_ROOT="src"
+          # Find the source root within PY_ROOT (check for src/ subdir first)
+          if [ -d "$PY_ROOT/src" ] && find "$PY_ROOT/src" -name "*.py" -maxdepth 3 | grep -q .; then
+            SRC_ROOT="$PY_ROOT/src"
+          elif [ -d "$PY_ROOT/app" ] && find "$PY_ROOT/app" -name "*.py" -maxdepth 3 | grep -q .; then
+            SRC_ROOT="$PY_ROOT"
+          elif [ "$PY_ROOT" != "." ]; then
+            SRC_ROOT="$PY_ROOT"
           else
-            SRC_ROOT="."
+            # Original fallback for root-level projects
+            if [ -d "src" ] && find src -name "*.py" -maxdepth 3 | grep -q .; then
+              SRC_ROOT="src"
+            else
+              SRC_ROOT="."
+            fi
           fi
+
+          echo "Python source root: $SRC_ROOT"
 
           # Document individual .py files (not just __init__.py packages)
           # This catches all actual code, not just empty package markers

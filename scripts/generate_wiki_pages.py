@@ -26,15 +26,37 @@ Usage:
 
 import argparse
 import asyncio
+import hashlib
 import json
+import logging
 import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
 import httpx
+
+# ---------------------------------------------------------------------------
+# Logging setup
+# ---------------------------------------------------------------------------
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)-7s %(message)s",
+    datefmt="%H:%M:%S",
+    stream=sys.stderr,
+)
+log = logging.getLogger("wiki-gen")
+
+# Explicit httpx timeout object -- bare float timeouts can silently fail
+# if the event loop is blocked by synchronous work in another coroutine.
+HTTPX_TIMEOUT = httpx.Timeout(connect=10.0, read=60.0, write=60.0, pool=10.0)
+
+# Global run timeout: abort the entire pipeline after this many seconds
+GLOBAL_RUN_TIMEOUT = 45 * 60  # 45 minutes
 
 
 # ---------------------------------------------------------------------------
@@ -382,8 +404,11 @@ async def query_raganything(
     Returns an empty string on failure so the pipeline can continue without
     graph context.
     """
+    rag_timeout = httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=5.0)
     try:
-        async with httpx.AsyncClient() as client:
+        log.info("  RAG query start: %s", package_name)
+        t0 = time.monotonic()
+        async with httpx.AsyncClient(timeout=rag_timeout) as client:
             response = await client.post(
                 f"{url}/query",
                 json={
@@ -393,14 +418,15 @@ async def query_raganything(
                     ),
                     "mode": "mix",
                 },
-                timeout=30.0,
             )
             response.raise_for_status()
+            elapsed = time.monotonic() - t0
+            log.info("  RAG query done: %s (%.1fs)", package_name, elapsed)
             return response.json().get("response", "")
     except (httpx.HTTPError, httpx.TimeoutException, KeyError, ValueError) as exc:
-        print(
-            f"Warning: RAGAnything query failed for {package_name}: {exc}",
-            file=sys.stderr,
+        elapsed = time.monotonic() - t0
+        log.warning(
+            "  RAG query failed for %s after %.1fs: %s", package_name, elapsed, exc
         )
         return ""
 
@@ -469,7 +495,9 @@ async def generate_docs(
     )
 
     try:
-        async with httpx.AsyncClient() as client:
+        log.info("  OpenAI call start: %s", package_name)
+        t0 = time.monotonic()
+        async with httpx.AsyncClient(timeout=HTTPX_TIMEOUT) as client:
             response = await client.post(
                 "https://api.openai.com/v1/chat/completions",
                 headers={"Authorization": f"Bearer {openai_key}"},
@@ -482,15 +510,17 @@ async def generate_docs(
                     "max_completion_tokens": 4000,
                     "temperature": 0.3,
                 },
-                timeout=60.0,
             )
             response.raise_for_status()
             data = response.json()
+            elapsed = time.monotonic() - t0
+            log.info("  OpenAI call done: %s (%.1fs)", package_name, elapsed)
             return data["choices"][0]["message"]["content"]
     except (httpx.HTTPError, httpx.TimeoutException, KeyError, IndexError) as exc:
-        print(
-            f"Error: OpenAI generation failed for {package_name}: {exc}",
-            file=sys.stderr,
+        elapsed = time.monotonic() - t0
+        log.error(
+            "  OpenAI generation failed for %s after %.1fs: %s",
+            package_name, elapsed, exc,
         )
         return ""
 
@@ -504,6 +534,7 @@ query ($path: String!) {
   pages {
     singleByPath(path: $path, locale: "en") {
       id
+      content
     }
   }
 }
@@ -549,22 +580,31 @@ mutation ($content: String!, $path: String!, $title: String!, $description: Stri
 """
 
 
+def _content_hash(text: str) -> str:
+    """Return a short SHA-256 hex digest for content comparison."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
 async def publish_to_wikijs(
     url: str, api_key: str, path: str, title: str, content: str
-) -> bool:
+) -> str:
     """Create or update a Wiki.js page via GraphQL.
 
-    First queries for an existing page at the given path. If found, updates it;
-    otherwise creates a new page. Pages are at /{repo}/{package} paths.
+    First queries for an existing page at the given path. If found, compares
+    content hashes -- if unchanged, skips the update to avoid the expensive
+    UPDATE mutation that can hang on large pages. If the content changed (or
+    the page does not exist), it creates/updates accordingly.
 
-    Returns True on success, False on failure.
+    Returns "published", "unchanged", or "failed".
     """
     full_path = path
     headers = {"Authorization": f"Bearer {api_key}"}
 
     try:
-        async with httpx.AsyncClient() as client:
-            # Check if page exists
+        async with httpx.AsyncClient(timeout=HTTPX_TIMEOUT) as client:
+            # --- Step 1: Check if page exists ---
+            log.info("  Wiki.js lookup: %s", full_path)
+            t0 = time.monotonic()
             resp = await client.post(
                 f"{url}/graphql",
                 headers=headers,
@@ -572,10 +612,11 @@ async def publish_to_wikijs(
                     "query": WIKIJS_QUERY_PAGE_BY_PATH,
                     "variables": {"path": full_path},
                 },
-                timeout=60.0,
             )
             resp.raise_for_status()
             data = resp.json()
+            elapsed = time.monotonic() - t0
+            log.info("  Wiki.js lookup done: %s (%.1fs)", full_path, elapsed)
 
             existing = (
                 data.get("data", {})
@@ -584,8 +625,23 @@ async def publish_to_wikijs(
             )
 
             if existing and existing.get("id"):
-                # Update existing page
                 page_id = existing["id"]
+
+                # --- Content hash comparison: skip update if unchanged ---
+                existing_content = existing.get("content", "")
+                if _content_hash(existing_content) == _content_hash(content):
+                    log.info(
+                        "  Wiki.js SKIP (unchanged): %s (page %d)",
+                        full_path, page_id,
+                    )
+                    return "unchanged"
+
+                # --- Step 2a: Update existing page ---
+                log.info(
+                    "  Wiki.js UPDATE start: %s (page %d, %d bytes)",
+                    full_path, page_id, len(content),
+                )
+                t0 = time.monotonic()
                 resp = await client.post(
                     f"{url}/graphql",
                     headers=headers,
@@ -597,9 +653,9 @@ async def publish_to_wikijs(
                             "title": title,
                         },
                     },
-                    timeout=60.0,
                 )
                 resp.raise_for_status()
+                elapsed = time.monotonic() - t0
                 result = (
                     resp.json()
                     .get("data", {})
@@ -608,15 +664,20 @@ async def publish_to_wikijs(
                     .get("responseResult", {})
                 )
                 if not result.get("succeeded"):
-                    print(
-                        f"Warning: Wiki.js update failed for {full_path}: "
-                        f"{result.get('message', 'unknown error')}",
-                        file=sys.stderr,
+                    log.warning(
+                        "  Wiki.js UPDATE failed for %s after %.1fs: %s",
+                        full_path, elapsed, result.get("message", "unknown error"),
                     )
-                    return False
-                return True
+                    return "failed"
+                log.info("  Wiki.js UPDATE done: %s (%.1fs)", full_path, elapsed)
+                return "published"
             else:
-                # Create new page
+                # --- Step 2b: Create new page ---
+                log.info(
+                    "  Wiki.js CREATE start: %s (%d bytes)",
+                    full_path, len(content),
+                )
+                t0 = time.monotonic()
                 resp = await client.post(
                     f"{url}/graphql",
                     headers=headers,
@@ -630,9 +691,9 @@ async def publish_to_wikijs(
                             "tags": ["auto-generated", "doc-pipeline"],
                         },
                     },
-                    timeout=60.0,
                 )
                 resp.raise_for_status()
+                elapsed = time.monotonic() - t0
                 result = (
                     resp.json()
                     .get("data", {})
@@ -641,13 +702,13 @@ async def publish_to_wikijs(
                     .get("responseResult", {})
                 )
                 if not result.get("succeeded"):
-                    print(
-                        f"Warning: Wiki.js create failed for {full_path}: "
-                        f"{result.get('message', 'unknown error')}",
-                        file=sys.stderr,
+                    log.warning(
+                        "  Wiki.js CREATE failed for %s after %.1fs: %s",
+                        full_path, elapsed, result.get("message", "unknown error"),
                     )
-                    return False
-                return True
+                    return "failed"
+                log.info("  Wiki.js CREATE done: %s (%.1fs)", full_path, elapsed)
+                return "published"
 
     except Exception as exc:
         detail = str(exc)
@@ -657,11 +718,11 @@ async def publish_to_wikijs(
                 detail = f"{exc} | Response: {exc.response.text[:500]}"
             except Exception:
                 pass
-        print(
-            f"Error: Wiki.js publish failed for {full_path}: {type(exc).__name__}: {detail}",
-            file=sys.stderr,
+        log.error(
+            "  Wiki.js publish failed for %s: %s: %s",
+            full_path, type(exc).__name__, detail,
         )
-        return False
+        return "failed"
 
 
 # ---------------------------------------------------------------------------
@@ -742,71 +803,57 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return args
 
 
-async def run(args: argparse.Namespace) -> None:
-    """Execute the wiki page generation pipeline."""
-
-    # ---- Validate API keys up-front ----
-    if not args.openai_api_key:
-        print(
-            "WARNING: No OpenAI API key provided (--openai-api-key or "
-            "OPENAI_API_KEY env var). Skipping doc generation.",
-            file=sys.stderr,
-        )
-        return
-
-    if not args.wikijs_api_key:
-        print(
-            "WARNING: No Wiki.js API key provided (--wikijs-api-key or "
-            "WIKIJS_API_KEY env var). Skipping Wiki.js publishing.",
-            file=sys.stderr,
-        )
-        return
+async def _run_inner(args: argparse.Namespace) -> None:
+    """Inner pipeline loop, called under a global timeout."""
 
     # ---- Discover packages: full mode scans docs/, incremental uses git diff ----
     if args.full:
         packages = scan_all_packages(Path(args.docs_dir))
         if not packages:
-            print("Full mode: no packages found in docs/ directory. Nothing to generate.")
+            log.info("Full mode: no packages found in docs/ directory. Nothing to generate.")
             return
-        print(f"Full mode: found {len(packages)} package(s) in docs/: {', '.join(packages)}")
+        log.info("Full mode: found %d package(s) in docs/: %s", len(packages), ", ".join(packages))
     else:
         changed_files = get_changed_files()
         if not changed_files:
-            print("No changed files detected. Nothing to generate.")
+            log.info("No changed files detected. Nothing to generate.")
             return
 
         packages = map_files_to_packages(changed_files)
         if not packages:
-            print("No source packages changed. Nothing to generate.")
+            log.info("No source packages changed. Nothing to generate.")
             return
 
-        print(f"Detected {len(packages)} changed package(s): {', '.join(packages)}")
+        log.info("Detected %d changed package(s): %s", len(packages), ", ".join(packages))
 
     docs_dir = Path(args.docs_dir)
     source_dir = Path(args.source_dir)
     published = 0
     skipped = 0
+    unchanged = 0
 
     PACKAGE_TIMEOUT = 120  # seconds -- max time per package before moving on
 
     for idx, package in enumerate(packages, 1):
-        print(f"[{idx}/{len(packages)}] Processing {package}...", flush=True)
+        log.info("[%d/%d] Processing %s ...", idx, len(packages), package)
         try:
-            success = await asyncio.wait_for(
+            result = await asyncio.wait_for(
                 _process_one_package(args, docs_dir, source_dir, package),
                 timeout=PACKAGE_TIMEOUT,
             )
         except asyncio.TimeoutError:
-            print(f"  TIMEOUT: >{PACKAGE_TIMEOUT}s, skipping", flush=True)
+            log.warning("  TIMEOUT: >%ds, skipping %s", PACKAGE_TIMEOUT, package)
             skipped += 1
             continue
         except Exception as exc:
-            print(f"  ERROR: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+            log.error("  ERROR on %s: %s: %s", package, type(exc).__name__, exc)
             skipped += 1
             continue
 
-        if success:
+        if result == "published":
             published += 1
+        elif result == "unchanged":
+            unchanged += 1
         else:
             skipped += 1
 
@@ -814,20 +861,52 @@ async def run(args: argparse.Namespace) -> None:
         if args.full:
             await asyncio.sleep(2)
 
-    print(f"\nDone. Published {published} page(s), skipped {skipped}.", flush=True)
+    log.info(
+        "Done. Published %d page(s), unchanged %d, skipped %d.",
+        published, unchanged, skipped,
+    )
 
 
-async def _process_one_package(args, docs_dir: Path, source_dir: Path, package: str) -> bool:
+async def run(args: argparse.Namespace) -> None:
+    """Execute the wiki page generation pipeline with a global timeout."""
+
+    # ---- Validate API keys up-front ----
+    if not args.openai_api_key:
+        log.warning(
+            "No OpenAI API key provided (--openai-api-key or "
+            "OPENAI_API_KEY env var). Skipping doc generation.",
+        )
+        return
+
+    if not args.wikijs_api_key:
+        log.warning(
+            "No Wiki.js API key provided (--wikijs-api-key or "
+            "WIKIJS_API_KEY env var). Skipping Wiki.js publishing.",
+        )
+        return
+
+    try:
+        await asyncio.wait_for(_run_inner(args), timeout=GLOBAL_RUN_TIMEOUT)
+    except asyncio.TimeoutError:
+        log.error(
+            "GLOBAL TIMEOUT: entire run exceeded %d minutes, aborting.",
+            GLOBAL_RUN_TIMEOUT // 60,
+        )
+
+
+async def _process_one_package(
+    args, docs_dir: Path, source_dir: Path, package: str
+) -> str:
     """Process a single package: read docs+source, query RAG, generate prose, publish.
 
-    Returns True if published, False if skipped.
+    Returns one of: "published", "unchanged", "skipped".
     """
     raw_docs = read_docs_for_package(docs_dir, package)
     source = read_source_for_package(source_dir, package)
 
     if not raw_docs and not source:
-        print(f"  Skipping: no docs or source found", flush=True)
-        return False
+        log.info("  Skipping %s: no docs or source found", package)
+        return "skipped"
 
     # Query RAGAnything for cross-repo graph context
     graph_context = await query_raganything(
@@ -845,23 +924,26 @@ async def _process_one_package(args, docs_dir: Path, source_dir: Path, package: 
     )
 
     if not content:
-        print(f"  Skipping: OpenAI returned empty content", flush=True)
-        return False
+        log.info("  Skipping %s: OpenAI returned empty content", package)
+        return "skipped"
 
     # Publish to Wiki.js
     page_path = f"{args.repo}/{package.replace('/', '-')}"
     title = f"{args.repo}: {package}"
 
-    success = await publish_to_wikijs(
+    result = await publish_to_wikijs(
         args.wikijs_url, args.wikijs_api_key, page_path, title, content
     )
 
-    if success:
-        print(f"  Published: /{page_path}", flush=True)
-        return True
+    if result == "published":
+        log.info("  Published: /%s", page_path)
+    elif result == "unchanged":
+        log.info("  Unchanged (skipped update): /%s", page_path)
     else:
-        print(f"  Failed to publish: /{page_path}", flush=True)
-        return False
+        log.warning("  Failed to publish: /%s", page_path)
+        result = "skipped"
+
+    return result
 
 
 def main() -> None:
