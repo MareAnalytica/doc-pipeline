@@ -203,9 +203,12 @@ def read_docs_for_package(docs_dir: Path, package: str) -> str:
     if not docs_dir.exists():
         return ""
 
-    # Normalize package name for matching
+    # Normalize package name for matching (handle both dots and underscores)
     package_parts = package.replace("/", ".").replace("-", "_").lower()
     package_last = package.rsplit("/", 1)[-1].lower().replace("-", "_")
+    # Also create underscore-only variants for filename matching
+    package_parts_underscored = package_parts.replace(".", "_")
+    package_last_underscored = package_last.replace(".", "_")
 
     collected: list[str] = []
 
@@ -217,8 +220,10 @@ def read_docs_for_package(docs_dir: Path, package: str) -> str:
 
         file_stem = doc_file.stem.lower().replace("-", "_")
 
-        # Match by filename containing the package name
-        if package_last in file_stem or package_parts in file_stem:
+        # Match by filename containing the package name (dots or underscores)
+        if (package_last in file_stem or package_parts in file_stem
+                or package_last_underscored in file_stem
+                or package_parts_underscored in file_stem):
             try:
                 content = doc_file.read_text(encoding="utf-8", errors="replace")
                 collected.append(
@@ -251,31 +256,83 @@ def read_source_for_package(source_dir: Path, package: str) -> str:
 
     Returns concatenated source code, capped at a reasonable size to fit
     within the LLM context window.
+
+    Tries multiple path mappings since full-mode package names may not
+    directly correspond to source tree paths:
+      - Direct path: source_dir/package
+      - Dots to slashes: python/hydra.adapter.checkpoint -> src/hydra_adapter/checkpoint.py
+      - Underscored: python/hydra_adapter_checkpoint -> src/hydra_adapter/checkpoint.py
     """
     source_extensions = {
         ".go", ".ts", ".tsx", ".js", ".jsx", ".py", ".proto",
     }
-    pkg_path = Path(source_dir) / package
-    if not pkg_path.is_dir():
-        return ""
+    source_dir = Path(source_dir)
+    max_total = 12000
+
+    # Strip language prefix (python/, go/, ts/, etc.) for source lookup
+    lang_prefix, _, pkg_name = package.partition("/")
+
+    # Build candidate paths
+    candidates: list[Path] = []
+
+    # Direct path
+    candidates.append(source_dir / package)
+
+    # For Python: convert dots to path separators and look for .py file
+    if lang_prefix == "python" and pkg_name:
+        # hydra.adapter.checkpoint -> hydra_adapter/checkpoint
+        parts = pkg_name.replace(".", "/").replace("_", "/").split("/")
+        # Try as a directory
+        candidates.append(source_dir / "/".join(parts))
+        candidates.append(source_dir / "src" / "/".join(parts))
+        # Try as a single .py file (last part is the module)
+        if len(parts) > 1:
+            dir_path = "/".join(parts[:-1])
+            candidates.append(source_dir / dir_path)
+            candidates.append(source_dir / "src" / dir_path)
+        # Also try underscored version
+        underscored = pkg_name.replace(".", "_")
+        candidates.append(source_dir / underscored)
+        candidates.append(source_dir / "src" / underscored.replace("_", "/"))
+
+    # For Go: try internal/ prefixed paths
+    if lang_prefix == "go" and pkg_name:
+        candidates.append(source_dir / "internal" / pkg_name)
+        candidates.append(source_dir / "internal" / pkg_name.replace(".", "/"))
+        candidates.append(source_dir / "cmd" / pkg_name)
+        candidates.append(source_dir / "pkg" / pkg_name)
+
+    # For TypeScript
+    if lang_prefix == "ts" and pkg_name:
+        candidates.append(source_dir / "src" / pkg_name)
+        candidates.append(source_dir / "src" / pkg_name.replace(".", "/"))
 
     collected: list[str] = []
     total_size = 0
-    max_total = 12000  # Characters -- leaves room in the prompt
 
-    for src_file in sorted(pkg_path.iterdir()):
-        if not src_file.is_file():
-            continue
-        if src_file.suffix not in source_extensions:
-            continue
-        try:
-            content = src_file.read_text(encoding="utf-8", errors="replace")
-            collected.append(f"--- {src_file.name} ---\n{content}")
-            total_size += len(content)
-            if total_size >= max_total:
+    for pkg_path in candidates:
+        if pkg_path.is_dir():
+            for src_file in sorted(pkg_path.iterdir()):
+                if not src_file.is_file() or src_file.suffix not in source_extensions:
+                    continue
+                try:
+                    content = src_file.read_text(encoding="utf-8", errors="replace")
+                    collected.append(f"--- {src_file.name} ---\n{content}")
+                    total_size += len(content)
+                    if total_size >= max_total:
+                        break
+                except Exception:
+                    continue
+            if collected:
                 break
-        except Exception:
-            continue
+        elif pkg_path.with_suffix(".py").is_file():
+            try:
+                content = pkg_path.with_suffix(".py").read_text(encoding="utf-8", errors="replace")
+                collected.append(f"--- {pkg_path.with_suffix('.py').name} ---\n{content}")
+            except Exception:
+                pass
+            if collected:
+                break
 
     return "\n\n".join(collected)
 
