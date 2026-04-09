@@ -10,8 +10,8 @@ it:
 1. Reads the raw AST docs (from the docs/ directory)
 2. Reads the actual source code (from the git checkout)
 3. Queries RAGAnything for cross-repo graph context
-4. Calls OpenAI gpt-4o-mini to generate grounded prose
-5. Publishes to Wiki.js via GraphQL under /auto/{repo}/{package}
+4. Calls OpenAI gpt-5.4-mini to generate grounded prose
+5. Publishes to Wiki.js via GraphQL under /{repo}/{package}
 
 Usage:
     python scripts/generate_wiki_pages.py \\
@@ -267,7 +267,7 @@ def build_user_prompt(
 ) -> str:
     """Build the user prompt for the OpenAI doc generation call.
 
-    Truncates each section to fit within gpt-4o-mini's context window while
+    Truncates each section to fit within gpt-5.4-mini's context window while
     preserving the most useful information.
     """
     sections = [
@@ -293,7 +293,7 @@ async def generate_docs(
     package_name: str,
     repo: str,
 ) -> str:
-    """Call gpt-4o-mini to generate human-readable documentation.
+    """Call gpt-5.4-mini to generate human-readable documentation.
 
     The prompt is grounded in three layers:
       - AST reference (complete, every symbol)
@@ -312,7 +312,7 @@ async def generate_docs(
                 "https://api.openai.com/v1/chat/completions",
                 headers={"Authorization": f"Bearer {openai_key}"},
                 json={
-                    "model": "gpt-4o-mini",
+                    "model": "gpt-5.4-mini",
                     "messages": [
                         {"role": "system", "content": SYSTEM_PROMPT},
                         {"role": "user", "content": user_prompt},
@@ -393,11 +393,11 @@ async def publish_to_wikijs(
     """Create or update a Wiki.js page via GraphQL.
 
     First queries for an existing page at the given path. If found, updates it;
-    otherwise creates a new page. The path is always under the /auto/ namespace.
+    otherwise creates a new page. Pages are at /{repo}/{package} paths.
 
     Returns True on success, False on failure.
     """
-    full_path = f"auto/{path}"
+    full_path = path
     headers = {"Authorization": f"Bearer {api_key}"}
 
     try:
@@ -554,7 +554,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--openai-api-key",
         default="",
-        help="OpenAI API key for gpt-4o-mini (fallback: OPENAI_API_KEY env var)",
+        help="OpenAI API key for gpt-5.4-mini (fallback: OPENAI_API_KEY env var)",
     )
     args = parser.parse_args(argv)
 
@@ -646,7 +646,7 @@ async def run(args: argparse.Namespace) -> None:
         )
 
         if success:
-            print(f"Published: /auto/{page_path}")
+            print(f"Published: /{page_path}")
             published += 1
         else:
             skipped += 1
