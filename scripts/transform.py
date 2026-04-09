@@ -20,6 +20,75 @@ from typing import Any
 
 
 # ---------------------------------------------------------------------------
+# Infrastructure entities -- these merge naturally across repos and should
+# NOT be namespace-qualified.  Everything else is a code entity and gets
+# qualified as {repo}/{package}.{Name}.
+# ---------------------------------------------------------------------------
+
+INFRASTRUCTURE_ENTITIES: frozenset[str] = frozenset({
+    # Databases
+    "PostgreSQL", "MySQL", "MariaDB", "MongoDB", "CockroachDB", "SQLite",
+    "DynamoDB", "Cassandra", "ScyllaDB", "ClickHouse", "TimescaleDB",
+    "InfluxDB", "SurrealDB",
+    # Caches / queues
+    "Redis", "Memcached", "Valkey",
+    "Kafka", "RabbitMQ", "NATS", "Pulsar",
+    # Object / file storage
+    "MinIO", "S3",
+    # Graph / vector / search
+    "Neo4j", "Qdrant", "Milvus", "Weaviate", "Elasticsearch", "OpenSearch",
+    "Typesense", "MeiliSearch",
+    # Identity / auth
+    "Zitadel", "Keycloak", "Auth0", "Okta",
+    # Orchestration / runtime
+    "Docker", "Kubernetes", "Nomad", "Podman",
+    # Reverse proxy / mesh
+    "Traefik", "Nginx", "Envoy", "Istio", "Linkerd", "Caddy",
+    # Observability
+    "Prometheus", "Grafana", "Jaeger", "Loki", "Tempo", "OpenTelemetry",
+    "Datadog", "Sentry",
+    # AI / ML runtimes
+    "Ollama", "OpenAI", "vLLM", "TensorRT",
+    # CI / CD
+    "GitHub", "GitLab", "Jenkins", "ArgoCD", "Flux",
+    # Cloud providers
+    "AWS", "GCP", "Azure",
+    # Misc infrastructure
+    "Terraform", "Vault", "Consul", "Etcd",
+})
+
+# Lower-cased version for case-insensitive lookups
+_INFRA_LOWER: frozenset[str] = frozenset(n.lower() for n in INFRASTRUCTURE_ENTITIES)
+
+
+def _is_infrastructure(name: str) -> bool:
+    """Return True if *name* is a well-known infrastructure entity."""
+    return name.lower() in _INFRA_LOWER
+
+
+def qualify_name(name: str, repo: str, package: str) -> str:
+    """Return namespace-qualified entity name or bare name for infra entities.
+
+    Code entities  -> ``{repo}/{package}.{Name}``
+    Infrastructure -> ``{Name}`` (unchanged)
+    """
+    if _is_infrastructure(name):
+        return name
+    if package:
+        return f"{repo}/{package}.{name}"
+    return f"{repo}/{name}"
+
+
+def _first_mention(name: str, repo: str, package: str) -> str:
+    """Format for first mention: ``qualified (short)`` for code entities."""
+    qname = qualify_name(name, repo, package)
+    if qname == name:
+        # Infrastructure -- no parenthetical needed
+        return name
+    return f"{qname} ({name})"
+
+
+# ---------------------------------------------------------------------------
 # TypeDoc JSON transformer
 # ---------------------------------------------------------------------------
 
@@ -157,8 +226,10 @@ def _typedoc_comment_text(node: dict) -> str:
     return " ".join(parts).strip()
 
 
-def _typedoc_walk_module(module: dict, repo: str) -> list[str]:
+def _typedoc_walk_module(module: dict, repo: str, _seen: set[str] | None = None) -> list[str]:
     """Walk a TypeDoc module/namespace and produce entity-rich sentences."""
+    if _seen is None:
+        _seen = set()
     lines: list[str] = []
     children = module.get("children", [])
     if not children:
@@ -166,14 +237,32 @@ def _typedoc_walk_module(module: dict, repo: str) -> list[str]:
 
     module_name = module.get("name", "unknown")
     kind = module.get("kind", 0)
+    # For the project root (kind 1), don't use its name as the package --
+    # it's just a container.  Real modules (kind 2) provide the package.
+    is_root = kind == 1
+    pkg = "" if is_root else module_name
 
     if kind in (_TYPEDOC_KIND_MODULE, _TYPEDOC_KIND_NAMESPACE, 1):
         child_names = [c.get("name", "") for c in children if c.get("name")]
         if child_names:
-            exports = ", ".join(child_names)
+            if is_root:
+                # Root children are modules, not code entities -- list bare names
+                exports = ", ".join(child_names)
+            else:
+                qualified_names = [qualify_name(n, repo, pkg) for n in child_names]
+                exports = ", ".join(qualified_names)
+                _seen.update(qualified_names)
             lines.append(
                 f"Module {module_name} in repo {repo} exports: {exports}."
             )
+
+    def _mention(name: str) -> str:
+        """Return first-mention or subsequent-mention form."""
+        qname = qualify_name(name, repo, pkg)
+        if qname not in _seen:
+            _seen.add(qname)
+            return _first_mention(name, repo, pkg)
+        return qname
 
     for child in children:
         child_kind = child.get("kind", 0)
@@ -182,12 +271,12 @@ def _typedoc_walk_module(module: dict, repo: str) -> list[str]:
         comment_sentence = f" {comment}" if comment else ""
 
         if child_kind == _TYPEDOC_KIND_CLASS:
-            lines.append(f"Class {child_name}:{comment_sentence}")
-            _typedoc_walk_class_or_interface(child, lines, "Class", child_name)
+            lines.append(f"Class {_mention(child_name)}:{comment_sentence}")
+            _typedoc_walk_class_or_interface(child, lines, "Class", child_name, repo, pkg, _seen)
 
         elif child_kind == _TYPEDOC_KIND_INTERFACE:
-            lines.append(f"Interface {child_name}:{comment_sentence}")
-            _typedoc_walk_class_or_interface(child, lines, "Interface", child_name)
+            lines.append(f"Interface {_mention(child_name)}:{comment_sentence}")
+            _typedoc_walk_class_or_interface(child, lines, "Interface", child_name, repo, pkg, _seen)
 
         elif child_kind == _TYPEDOC_KIND_FUNCTION:
             sigs = child.get("signatures", [])
@@ -197,11 +286,11 @@ def _typedoc_walk_module(module: dict, repo: str) -> list[str]:
                 sig_comment = _typedoc_comment_text(sig)
                 desc = f" {sig_comment}" if sig_comment else comment_sentence
                 lines.append(
-                    f"Function {child_name} accepts {params} and returns {ret}.{desc}"
+                    f"Function {_mention(child_name)} accepts {params} and returns {ret}.{desc}"
                 )
 
         elif child_kind == _TYPEDOC_KIND_ENUM:
-            lines.append(f"Enum {child_name}:{comment_sentence}")
+            lines.append(f"Enum {_mention(child_name)}:{comment_sentence}")
             members = child.get("children", [])
             if members:
                 vals = ", ".join(
@@ -215,28 +304,32 @@ def _typedoc_walk_module(module: dict, repo: str) -> list[str]:
         elif child_kind == _TYPEDOC_KIND_TYPE_ALIAS:
             t = _typedoc_type_to_str(child.get("type"))
             lines.append(
-                f"Type alias {child_name} is defined as {t}.{comment_sentence}"
+                f"Type alias {_mention(child_name)} is defined as {t}.{comment_sentence}"
             )
 
         elif child_kind == _TYPEDOC_KIND_VARIABLE:
             t = _typedoc_type_to_str(child.get("type"))
             lines.append(
-                f"Variable {child_name} has type {t}.{comment_sentence}"
+                f"Variable {_mention(child_name)} has type {t}.{comment_sentence}"
             )
 
         elif child_kind in (_TYPEDOC_KIND_MODULE, _TYPEDOC_KIND_NAMESPACE):
             # Recurse into sub-modules / namespaces
-            sub_lines = _typedoc_walk_module(child, repo)
+            sub_lines = _typedoc_walk_module(child, repo, _seen)
             lines.extend(sub_lines)
 
     return lines
 
 
 def _typedoc_walk_class_or_interface(
-    node: dict, lines: list[str], kind_label: str, parent_name: str
+    node: dict, lines: list[str], kind_label: str, parent_name: str,
+    repo: str = "", pkg: str = "", _seen: set[str] | None = None,
 ) -> None:
     """Walk members of a class or interface and append entity-rich lines."""
+    if _seen is None:
+        _seen = set()
     children = node.get("children", [])
+    parent_qname = qualify_name(parent_name, repo, pkg)
 
     # Collect properties/fields
     props = [c for c in children if c.get("kind") in (_TYPEDOC_KIND_PROPERTY, _TYPEDOC_KIND_ACCESSOR)]
@@ -258,7 +351,7 @@ def _typedoc_walk_class_or_interface(
             for sig in sigs:
                 params = _typedoc_extract_params(sig)
                 lines.append(
-                    f"  Constructor of {parent_name} accepts {params}."
+                    f"  Constructor of {parent_qname} accepts {params}."
                 )
 
         elif ckind == _TYPEDOC_KIND_METHOD:
@@ -269,7 +362,7 @@ def _typedoc_walk_class_or_interface(
                 sig_comment = _typedoc_comment_text(sig)
                 desc = f" {sig_comment}" if sig_comment else ""
                 lines.append(
-                    f"  Method {cname} accepts {params} and returns {ret}.{desc}"
+                    f"  Method {cname} on {parent_qname} accepts {params} and returns {ret}.{desc}"
                 )
 
 
@@ -312,9 +405,17 @@ def transform_gomarkdoc(path: Path, repo: str, commit: str) -> list[dict]:
     """
     text = path.read_text(encoding="utf-8")
     lines: list[str] = []
+    seen: set[str] = set()
 
     current_package = ""
     current_type = ""
+
+    def _mention(name: str) -> str:
+        qname = qualify_name(name, repo, current_package)
+        if qname not in seen:
+            seen.add(qname)
+            return _first_mention(name, repo, current_package)
+        return qname
 
     # Regex patterns for gomarkdoc structure
     pkg_header = re.compile(r"^#\s+(?:package\s+)?(\S+)", re.IGNORECASE)
@@ -351,7 +452,7 @@ def transform_gomarkdoc(path: Path, repo: str, commit: str) -> list[dict]:
                 code_text = "\n".join(code_lines)
                 _gomarkdoc_process_code(
                     code_text, lines, current_package, current_type,
-                    pending_entity, pending_kind, repo
+                    pending_entity, pending_kind, repo, seen
                 )
                 code_lines = []
             else:
@@ -376,7 +477,7 @@ def transform_gomarkdoc(path: Path, repo: str, commit: str) -> list[dict]:
             current_type = m.group(1)
             pending_entity = current_type
             pending_kind = "type"
-            lines.append(f"Type {current_type}:")
+            lines.append(f"Type {_mention(current_type)}:")
             continue
 
         # Standalone function header (## func Foo)
@@ -449,8 +550,19 @@ def _gomarkdoc_process_code(
     pending_entity: str,
     pending_kind: str,
     repo: str,
+    seen: set[str] | None = None,
 ) -> None:
     """Extract function/type signatures from Go code blocks."""
+    if seen is None:
+        seen = set()
+
+    def _mention(name: str) -> str:
+        qname = qualify_name(name, repo, package)
+        if qname not in seen:
+            seen.add(qname)
+            return _first_mention(name, repo, package)
+        return qname
+
     # Type definitions: type Foo struct { ... }
     type_match = re.search(r"type\s+(\w+)\s+(struct|interface)", code)
     if type_match:
@@ -494,11 +606,12 @@ def _gomarkdoc_process_code(
             ret_str = "returns nothing"
 
         if receiver_type:
+            recv_qname = qualify_name(receiver_type, repo, package)
             lines.append(
-                f"  Method {func_name} on {receiver_type} {param_str} and {ret_str}."
+                f"  Method {func_name} on {recv_qname} {param_str} and {ret_str}."
             )
         else:
-            lines.append(f"Function {func_name} {param_str} and {ret_str}.")
+            lines.append(f"Function {_mention(func_name)} {param_str} and {ret_str}.")
 
 
 def _go_parse_params(params_raw: str) -> str:
@@ -553,9 +666,17 @@ def transform_pydoc_markdown(path: Path, repo: str, commit: str) -> list[dict]:
     """
     text = path.read_text(encoding="utf-8")
     lines: list[str] = []
+    seen: set[str] = set()
 
     current_module = path.stem
     current_class = ""
+
+    def _mention(name: str) -> str:
+        qname = qualify_name(name, repo, current_module)
+        if qname not in seen:
+            seen.add(qname)
+            return _first_mention(name, repo, current_module)
+        return qname
 
     # Regex patterns
     module_header = re.compile(r"^#+\s+(?:module\s+)?(\S+)", re.IGNORECASE)
@@ -583,7 +704,7 @@ def transform_pydoc_markdown(path: Path, repo: str, commit: str) -> list[dict]:
                 code_text = "\n".join(code_lines)
                 _pydoc_process_code(
                     code_text, lines, current_module, current_class,
-                    pending_decorators
+                    pending_decorators, repo, seen
                 )
                 code_lines = []
                 pending_decorators = []
@@ -615,7 +736,7 @@ def transform_pydoc_markdown(path: Path, repo: str, commit: str) -> list[dict]:
                 # Heuristic: capitalized name is likely a class
                 if name[0].isupper():
                     current_class = name
-                    lines.append(f"Class {name}:")
+                    lines.append(f"Class {_mention(name)}:")
                     continue
 
             fm = re.match(r"^#+\s+(?:def\s+)?(\w+)$", stripped)
@@ -623,9 +744,10 @@ def transform_pydoc_markdown(path: Path, repo: str, commit: str) -> list[dict]:
                 name = fm.group(1)
                 if name[0].islower() or name.startswith("_"):
                     if current_class:
-                        lines.append(f"  Method {name} on {current_class}:")
+                        class_qname = qualify_name(current_class, repo, current_module)
+                        lines.append(f"  Method {name} on {class_qname}:")
                     else:
-                        lines.append(f"Function {name}:")
+                        lines.append(f"Function {_mention(name)}:")
                 continue
 
         # Doc text (non-header, non-code paragraphs)
@@ -658,15 +780,28 @@ def _pydoc_process_code(
     module: str,
     current_class: str,
     decorators: list[str],
+    repo: str = "",
+    seen: set[str] | None = None,
 ) -> None:
     """Extract class and function definitions from Python code blocks."""
+    if seen is None:
+        seen = set()
+
+    def _mention(name: str) -> str:
+        qname = qualify_name(name, repo, module)
+        if qname not in seen:
+            seen.add(qname)
+            return _first_mention(name, repo, module)
+        return qname
+
     # Class definitions
     cm = re.search(r"class\s+(\w+)\s*(?:\(([^)]*)\))?:", code)
     if cm:
         name = cm.group(1)
         bases = cm.group(2)
+        name_q = qualify_name(name, repo, module)
         if bases:
-            lines.append(f"  {name} inherits from {bases}.")
+            lines.append(f"  {name_q} inherits from {bases}.")
         return
 
     # Function/method definitions
@@ -693,14 +828,15 @@ def _pydoc_process_code(
                 break
 
         if current_class and func_name != "__init__":
+            class_qname = qualify_name(current_class, repo, module)
             lines.append(
-                f"  Method {func_name} {param_str} and {ret_str}.{route_info}"
+                f"  Method {func_name} on {class_qname} {param_str} and {ret_str}.{route_info}"
             )
         elif func_name == "__init__":
             lines.append(f"  Constructor {param_str}.")
         else:
             lines.append(
-                f"Function {func_name} {param_str} and {ret_str}.{route_info}"
+                f"Function {_mention(func_name)} {param_str} and {ret_str}.{route_info}"
             )
 
 
@@ -783,17 +919,28 @@ def transform_protoc_json(path: Path, repo: str, commit: str) -> list[dict]:
     if isinstance(data, list):
         files = data
 
+    seen: set[str] = set()
+
     for proto_file in files:
         fname = proto_file.get("name", "unknown")
         package = proto_file.get("package", "")
         pkg_label = f" in package {package}" if package else ""
+        # Use the proto package (e.g. "payment.v1") as the namespace package
+        ns_pkg = package or fname.rsplit("/", 1)[0] if "/" in fname else ""
+
+        def _mention(name: str) -> str:
+            qname = qualify_name(name, repo, ns_pkg)
+            if qname not in seen:
+                seen.add(qname)
+                return _first_mention(name, repo, ns_pkg)
+            return qname
 
         # Services
         for svc in proto_file.get("services", []):
             svc_name = svc.get("name", "unknown")
             desc = svc.get("description", "")
             desc_str = f" {desc}" if desc else ""
-            lines.append(f"Service {svc_name}{pkg_label} in repo {repo}:{desc_str}")
+            lines.append(f"Service {_mention(svc_name)}{pkg_label} in repo {repo}:{desc_str}")
 
             for method in svc.get("methods", []):
                 method_name = method.get("name", "unknown")
@@ -809,10 +956,11 @@ def transform_protoc_json(path: Path, repo: str, commit: str) -> list[dict]:
                 if resp_streaming:
                     streaming_info += " with server streaming"
 
+                svc_qname = qualify_name(svc_name, repo, ns_pkg)
                 desc_info = f" {method_desc}" if method_desc else ""
                 lines.append(
-                    f"  RPC {method_name} accepts {req_type} and returns "
-                    f"{resp_type}{streaming_info}.{desc_info}"
+                    f"  RPC {method_name} on {svc_qname} accepts {_mention(req_type)} and returns "
+                    f"{_mention(resp_type)}{streaming_info}.{desc_info}"
                 )
 
         # Messages
@@ -820,7 +968,7 @@ def transform_protoc_json(path: Path, repo: str, commit: str) -> list[dict]:
             msg_name = msg.get("name", "unknown")
             desc = msg.get("description", "")
             desc_str = f" {desc}" if desc else ""
-            lines.append(f"Message {msg_name}{pkg_label}:{desc_str}")
+            lines.append(f"Message {_mention(msg_name)}{pkg_label}:{desc_str}")
 
             fields = msg.get("fields", [])
             if fields:
@@ -842,11 +990,11 @@ def transform_protoc_json(path: Path, repo: str, commit: str) -> list[dict]:
 
             # Nested enums within messages
             for enum in msg.get("enums", []):
-                _protoc_process_enum(enum, lines, pkg_label)
+                _protoc_process_enum(enum, lines, pkg_label, repo, ns_pkg, seen)
 
         # Top-level enums
         for enum in proto_file.get("enums", []):
-            _protoc_process_enum(enum, lines, pkg_label)
+            _protoc_process_enum(enum, lines, pkg_label, repo, ns_pkg, seen)
 
     if not lines:
         return []
@@ -866,13 +1014,23 @@ def transform_protoc_json(path: Path, repo: str, commit: str) -> list[dict]:
 
 
 def _protoc_process_enum(
-    enum: dict, lines: list[str], pkg_label: str
+    enum: dict, lines: list[str], pkg_label: str,
+    repo: str = "", ns_pkg: str = "", seen: set[str] | None = None,
 ) -> None:
     """Process a protobuf enum definition."""
+    if seen is None:
+        seen = set()
     enum_name = enum.get("name", "unknown")
     desc = enum.get("description", "")
     desc_str = f" {desc}" if desc else ""
-    lines.append(f"Enum {enum_name}{pkg_label}:{desc_str}")
+
+    qname = qualify_name(enum_name, repo, ns_pkg)
+    if qname not in seen:
+        seen.add(qname)
+        display = _first_mention(enum_name, repo, ns_pkg)
+    else:
+        display = qname
+    lines.append(f"Enum {display}{pkg_label}:{desc_str}")
 
     values = enum.get("values", [])
     if values:

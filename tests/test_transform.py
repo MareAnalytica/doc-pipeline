@@ -12,6 +12,10 @@ SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 from transform import (
+    INFRASTRUCTURE_ENTITIES,
+    _is_infrastructure,
+    qualify_name,
+    _first_mention,
     transform_gomarkdoc,
     transform_helm_docs,
     transform_protoc_json,
@@ -68,44 +72,44 @@ class TestTypedocTransformer:
     def test_module_exports(self, results):
         content = _get_content(results)
         assert "Module auth" in content
-        assert "AuthService" in content
+        assert "justpay-backend/auth.AuthService" in content
 
     def test_class_with_methods(self, results):
         content = _get_content(results)
-        assert "Class AuthService:" in content
-        assert "Method login" in content
+        assert "Class justpay-backend/auth.AuthService:" in content
+        assert "Method login on justpay-backend/auth.AuthService" in content
         assert "LoginRequest" in content
         assert "Promise<LoginResult>" in content
 
     def test_constructor(self, results):
         content = _get_content(results)
-        assert "Constructor of AuthService" in content
+        assert "Constructor of justpay-backend/auth.AuthService" in content
         assert "ZitadelClient" in content
         assert "UserRepository" in content
 
     def test_interface_with_fields(self, results):
         content = _get_content(results)
-        assert "Interface LoginResult:" in content
+        assert "Interface justpay-backend/auth.LoginResult" in content
         assert "status (string)" in content
         assert "session_id (string)" in content
         assert "access_token (string)" in content
 
     def test_enum(self, results):
         content = _get_content(results)
-        assert "Enum AuthStatus:" in content
+        assert "Enum justpay-backend/auth.AuthStatus" in content
         assert "AUTHENTICATED" in content
         assert "MFA_REQUIRED" in content
         assert "FAILED" in content
 
     def test_standalone_function(self, results):
         content = _get_content(results)
-        assert "Function createAuthHandler" in content
+        assert "Function justpay-backend/auth.createAuthHandler" in content
         assert "AuthHandlerConfig" in content
         assert "Router" in content
 
     def test_type_alias(self, results):
         content = _get_content(results)
-        assert "Type alias SessionData" in content
+        assert "Type alias justpay-backend/auth.SessionData" in content
         assert "BaseSession" in content
 
     def test_doc_comments(self, results):
@@ -146,17 +150,17 @@ class TestGomarkdocTransformer:
 
     def test_type_declaration(self, results):
         content = _get_content(results)
-        assert "Type PaymentService:" in content
-        assert "Type TenancyService:" in content
+        assert "Type justpay-backend/service.PaymentService" in content
+        assert "Type justpay-backend/service.TenancyService" in content
 
     def test_constructor_function(self, results):
         content = _get_content(results)
-        assert "NewPaymentService" in content
+        assert "justpay-backend/service.NewPaymentService" in content
 
     def test_method_signatures(self, results):
         content = _get_content(results)
-        assert "ProcessPayment" in content
-        assert "GetPaymentStatus" in content
+        assert "Method ProcessPayment on justpay-backend/service.PaymentService" in content
+        assert "Method GetPaymentStatus on justpay-backend/service.PaymentService" in content
 
     def test_parameter_types(self, results):
         content = _get_content(results)
@@ -249,14 +253,14 @@ class TestProtocTransformer:
 
     def test_service_declaration(self, results):
         content = _get_content(results)
-        assert "Service PaymentService" in content
+        assert "Service justpay-backend/payment.v1.PaymentService" in content
         assert "payment.v1" in content
 
     def test_rpc_methods(self, results):
         content = _get_content(results)
-        assert "RPC ProcessPayment" in content
-        assert "accepts PaymentRequest" in content
-        assert "returns PaymentResponse" in content
+        assert "RPC ProcessPayment on justpay-backend/payment.v1.PaymentService" in content
+        assert "accepts justpay-backend/payment.v1.PaymentRequest" in content
+        assert "returns justpay-backend/payment.v1.PaymentResponse" in content
 
     def test_streaming_rpc(self, results):
         content = _get_content(results)
@@ -265,14 +269,14 @@ class TestProtocTransformer:
 
     def test_message_definition(self, results):
         content = _get_content(results)
-        assert "Message PaymentRequest" in content
+        assert "Message justpay-backend/payment.v1.PaymentRequest" in content
         assert "amount (double)" in content
         assert "currency (string)" in content
         assert "merchant_id (string)" in content
 
     def test_enum_definition(self, results):
         content = _get_content(results)
-        assert "Enum PaymentStatus" in content
+        assert "Enum justpay-backend/payment.v1.PaymentStatus" in content
         assert "PENDING (1)" in content
         assert "COMPLETED (2)" in content
         assert "FAILED (3)" in content
@@ -343,6 +347,124 @@ class TestHelmDocsTransformer:
         assert "int" in content
         assert "string" in content
         assert "bool" in content
+
+
+# ---------------------------------------------------------------------------
+# Namespace qualification tests
+# ---------------------------------------------------------------------------
+
+class TestNamespaceQualification:
+    """Verify that code entities are namespace-qualified and infra entities are not."""
+
+    def test_qualify_name_code_entity(self):
+        assert qualify_name("AuthService", "justpay-backend", "service") == "justpay-backend/service.AuthService"
+
+    def test_qualify_name_infra_entity(self):
+        assert qualify_name("PostgreSQL", "justpay-backend", "service") == "PostgreSQL"
+
+    def test_qualify_name_case_insensitive_infra(self):
+        # Infrastructure lookup should be case-insensitive
+        assert _is_infrastructure("postgresql")
+        assert _is_infrastructure("REDIS")
+        assert _is_infrastructure("Kafka")
+
+    def test_qualify_name_no_package(self):
+        assert qualify_name("Foo", "my-repo", "") == "my-repo/Foo"
+
+    def test_first_mention_code_entity(self):
+        result = _first_mention("AuthService", "repo", "svc")
+        assert result == "repo/svc.AuthService (AuthService)"
+
+    def test_first_mention_infra_entity(self):
+        result = _first_mention("Redis", "repo", "svc")
+        assert result == "Redis"
+
+    def test_infrastructure_set_comprehensive(self):
+        """Key infrastructure names should all be in the set."""
+        for name in [
+            "MinIO", "Qdrant", "PostgreSQL", "Neo4j", "Zitadel", "Kafka",
+            "Redis", "Docker", "Kubernetes", "Traefik", "Prometheus",
+            "Grafana", "Ollama", "OpenAI",
+        ]:
+            assert _is_infrastructure(name), f"{name} should be infrastructure"
+
+    def test_code_entities_not_infrastructure(self):
+        """Common code names should NOT match infrastructure."""
+        for name in [
+            "AuthService", "PaymentService", "Client", "Handler",
+            "UserRepository", "LoginRequest", "Config",
+        ]:
+            assert not _is_infrastructure(name), f"{name} should NOT be infrastructure"
+
+    def test_typedoc_entities_qualified(self):
+        results = transform_typedoc_json(FIXTURES / "typedoc.json", REPO, COMMIT)
+        content = _get_content(results)
+        assert "justpay-backend/auth.AuthService" in content
+        assert "justpay-backend/auth.LoginResult" in content
+        assert "justpay-backend/auth.createAuthHandler" in content
+        assert "justpay-backend/auth.SessionData" in content
+
+    def test_typedoc_infra_not_qualified(self):
+        """ZitadelClient contains 'Zitadel' but the full name 'ZitadelClient' is
+        NOT in the infra set, so it should appear unqualified only in type
+        references (it's not a declared entity in this module)."""
+        results = transform_typedoc_json(FIXTURES / "typedoc.json", REPO, COMMIT)
+        content = _get_content(results)
+        # ZitadelClient appears in field/param types, not as a declared entity
+        assert "ZitadelClient" in content
+
+    def test_gomarkdoc_entities_qualified(self):
+        results = transform_gomarkdoc(FIXTURES / "packages.md", REPO, COMMIT)
+        content = _get_content(results)
+        assert "justpay-backend/service.PaymentService" in content
+        assert "justpay-backend/service.TenancyService" in content
+        assert "justpay-backend/service.NewPaymentService" in content
+
+    def test_gomarkdoc_method_uses_qualified_receiver(self):
+        results = transform_gomarkdoc(FIXTURES / "packages.md", REPO, COMMIT)
+        content = _get_content(results)
+        assert "Method ProcessPayment on justpay-backend/service.PaymentService" in content
+        assert "Method CreateLease on justpay-backend/service.TenancyService" in content
+
+    def test_protoc_entities_qualified(self):
+        results = transform_protoc_json(FIXTURES / "proto-docs.json", REPO, COMMIT)
+        content = _get_content(results)
+        assert "justpay-backend/payment.v1.PaymentService" in content
+        assert "justpay-backend/payment.v1.PaymentRequest" in content
+        assert "justpay-backend/payment.v1.PaymentStatus" in content
+
+    def test_protoc_cross_references_consistent(self):
+        """Within the same repo, cross-references should use the same qualified name."""
+        results = transform_protoc_json(FIXTURES / "proto-docs.json", REPO, COMMIT)
+        content = _get_content(results)
+        # PaymentService should appear the same way in service declaration and RPC lines
+        svc_qname = "justpay-backend/payment.v1.PaymentService"
+        assert content.count(svc_qname) >= 4, (
+            f"Expected {svc_qname} at least 4 times (1 service + 3 RPCs), "
+            f"found {content.count(svc_qname)}"
+        )
+
+    def test_pydoc_entities_qualified(self):
+        results = transform_pydoc_markdown(FIXTURES / "api_routes.md", REPO, COMMIT)
+        content = _get_content(results)
+        assert "justpay-backend/api_routes.PaymentRouter" in content
+        assert "justpay-backend/api_routes.PaymentCreateRequest" in content
+        assert "justpay-backend/api_routes.PaymentResponse" in content
+
+    def test_helm_not_qualified(self):
+        """Helm chart values are config keys, not code entities -- no qualification."""
+        results = transform_helm_docs(FIXTURES / "helm-readme.md", REPO, COMMIT)
+        content = _get_content(results)
+        # Helm values should NOT be qualified
+        assert "justpay-backend/" not in content
+
+    def test_different_repos_different_qualified_names(self):
+        """The same entity name in different repos gets different qualified names."""
+        q1 = qualify_name("Client", "justpay-backend", "service")
+        q2 = qualify_name("Client", "hydra-brain", "models")
+        assert q1 == "justpay-backend/service.Client"
+        assert q2 == "hydra-brain/models.Client"
+        assert q1 != q2
 
 
 # ---------------------------------------------------------------------------
@@ -474,11 +596,17 @@ class TestEntityDensity:
             FIXTURES / "typedoc.json", REPO, COMMIT
         )
         content = _get_content(results)
-        # Should mention all key entities
+        # Should mention all key entities (qualified form)
         entities = [
-            "AuthService", "LoginResult", "LoginRequest", "AuthStatus",
-            "createAuthHandler", "SessionData", "ZitadelClient",
-            "UserRepository", "AuthHandlerConfig",
+            "justpay-backend/auth.AuthService",
+            "justpay-backend/auth.LoginResult",
+            "justpay-backend/auth.LoginRequest",
+            "justpay-backend/auth.AuthStatus",
+            "justpay-backend/auth.createAuthHandler",
+            "justpay-backend/auth.SessionData",
+            "ZitadelClient",      # appears in field types (unqualified ref)
+            "UserRepository",     # appears in field types (unqualified ref)
+            "AuthHandlerConfig",  # appears in param types (unqualified ref)
         ]
         found = sum(1 for e in entities if e in content)
         assert found >= 7, (
