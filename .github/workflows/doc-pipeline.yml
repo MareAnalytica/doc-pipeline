@@ -132,10 +132,37 @@ jobs:
         continue-on-error: true
         run: |
           mkdir -p docs/python
-          for pkg in $(find . -name "__init__.py" -maxdepth 3 -exec dirname {} \; | head -5); do
-            module=$(echo "$pkg" | sed 's|^\./||; s|/|.|g')
-            pydoc-markdown -I . -m "$module" > "docs/python/${module}.md" 2>/dev/null || true
+
+          # Find the source root (src/ or project root)
+          if [ -d "src" ] && find src -name "*.py" -maxdepth 3 | grep -q .; then
+            SRC_ROOT="src"
+          else
+            SRC_ROOT="."
+          fi
+
+          # Document individual .py files (not just __init__.py packages)
+          # This catches all actual code, not just empty package markers
+          find "$SRC_ROOT" -name "*.py" -maxdepth 4 \
+            -not -name "__init__.py" \
+            -not -name "conftest.py" \
+            -not -name "setup.py" \
+            -not -path "*/venv/*" \
+            -not -path "*/.venv/*" \
+            -not -path "*/__pycache__/*" \
+            -not -path "*/node_modules/*" \
+            -not -path "*/migrations/*" \
+            -not -path "*/test*" | while read -r pyfile; do
+            module=$(echo "$pyfile" | sed "s|^${SRC_ROOT}/||; s|/|.|g; s|\.py$||")
+            outname=$(echo "$module" | tr '.' '_')
+            pydoc-markdown -I "$SRC_ROOT" -m "$module" > "docs/python/${outname}.md" 2>/dev/null || true
           done
+
+          # Remove empty/tiny files (< 100 bytes = just a header)
+          find docs/python -name "*.md" -size -100c -delete 2>/dev/null || true
+
+          COUNT=$(find docs/python -name "*.md" -type f | wc -l)
+          SIZE=$(du -sh docs/python 2>/dev/null | cut -f1)
+          echo "Python docs: ${COUNT} files, ${SIZE} total"
 
       - name: Generate Protobuf docs
         if: steps.detect.outputs.has_proto == 'true'
