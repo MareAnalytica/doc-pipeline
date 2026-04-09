@@ -1,0 +1,274 @@
+{
+  "id": 0,
+  "name": "justpay-backend",
+  "kind": 1,
+  "children": [
+    {
+      "id": 1,
+      "name": "auth",
+      "kind": 2,
+      "children": [
+        {
+          "id": 10,
+          "name": "AuthService",
+          "kind": 128,
+          "comment": {
+            "summary": [
+              {"kind": "text", "text": "Handles authentication and session management."}
+            ]
+          },
+          "children": [
+            {
+              "id": 11,
+              "name": "constructor",
+              "kind": 512,
+              "signatures": [
+                {
+                  "id": 12,
+                  "name": "new AuthService",
+                  "kind": 16384,
+                  "parameters": [
+                    {
+                      "id": 13,
+                      "name": "zitadel",
+                      "type": {"type": "reference", "name": "ZitadelClient"}
+                    },
+                    {
+                      "id": 14,
+                      "name": "userRepo",
+                      "type": {"type": "reference", "name": "UserRepository"}
+                    }
+                  ],
+                  "type": {"type": "reference", "name": "AuthService"}
+                }
+              ]
+            },
+            {
+              "id": 15,
+              "name": "zitadel",
+              "kind": 1024,
+              "type": {"type": "reference", "name": "ZitadelClient"}
+            },
+            {
+              "id": 16,
+              "name": "userRepo",
+              "kind": 1024,
+              "type": {"type": "reference", "name": "UserRepository"}
+            },
+            {
+              "id": 20,
+              "name": "login",
+              "kind": 2048,
+              "signatures": [
+                {
+                  "id": 21,
+                  "name": "login",
+                  "kind": 4096,
+                  "comment": {
+                    "summary": [
+                      {"kind": "text", "text": "Authenticates a user with email and password."}
+                    ]
+                  },
+                  "parameters": [
+                    {
+                      "id": 22,
+                      "name": "ctx",
+                      "type": {"type": "reference", "name": "Context"}
+                    },
+                    {
+                      "id": 23,
+                      "name": "req",
+                      "type": {"type": "reference", "name": "LoginRequest"}
+                    }
+                  ],
+                  "type": {
+                    "type": "reference",
+                    "name": "Promise",
+                    "typeArguments": [
+                      {"type": "reference", "name": "LoginResult"}
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "id": 30,
+              "name": "register",
+              "kind": 2048,
+              "signatures": [
+                {
+                  "id": 31,
+                  "name": "register",
+                  "kind": 4096,
+                  "comment": {
+                    "summary": [
+                      {"kind": "text", "text": "Creates a new user account."}
+                    ]
+                  },
+                  "parameters": [
+                    {
+                      "id": 32,
+                      "name": "ctx",
+                      "type": {"type": "reference", "name": "Context"}
+                    },
+                    {
+                      "id": 33,
+                      "name": "req",
+                      "type": {"type": "reference", "name": "RegisterRequest"}
+                    }
+                  ],
+                  "type": {
+                    "type": "reference",
+                    "name": "Promise",
+                    "typeArguments": [
+                      {"type": "reference", "name": "LoginResult"}
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": 40,
+          "name": "LoginResult",
+          "kind": 256,
+          "comment": {
+            "summary": [
+              {"kind": "text", "text": "Result of a successful authentication operation."}
+            ]
+          },
+          "children": [
+            {
+              "id": 41,
+              "name": "status",
+              "kind": 1024,
+              "type": {"type": "intrinsic", "name": "string"}
+            },
+            {
+              "id": 42,
+              "name": "session_id",
+              "kind": 1024,
+              "type": {"type": "intrinsic", "name": "string"}
+            },
+            {
+              "id": 43,
+              "name": "session_token",
+              "kind": 1024,
+              "type": {"type": "intrinsic", "name": "string"}
+            },
+            {
+              "id": 44,
+              "name": "access_token",
+              "kind": 1024,
+              "type": {"type": "intrinsic", "name": "string"}
+            }
+          ]
+        },
+        {
+          "id": 50,
+          "name": "LoginRequest",
+          "kind": 256,
+          "children": [
+            {
+              "id": 51,
+              "name": "email",
+              "kind": 1024,
+              "type": {"type": "intrinsic", "name": "string"}
+            },
+            {
+              "id": 52,
+              "name": "password",
+              "kind": 1024,
+              "type": {"type": "intrinsic", "name": "string"}
+            }
+          ]
+        },
+        {
+          "id": 60,
+          "name": "AuthStatus",
+          "kind": 8,
+          "comment": {
+            "summary": [
+              {"kind": "text", "text": "Possible authentication statuses."}
+            ]
+          },
+          "children": [
+            {
+              "id": 61,
+              "name": "AUTHENTICATED",
+              "kind": 16,
+              "type": {"type": "literal", "value": "authenticated"}
+            },
+            {
+              "id": 62,
+              "name": "MFA_REQUIRED",
+              "kind": 16,
+              "type": {"type": "literal", "value": "mfa_required"}
+            },
+            {
+              "id": 63,
+              "name": "FAILED",
+              "kind": 16,
+              "type": {"type": "literal", "value": "failed"}
+            }
+          ]
+        },
+        {
+          "id": 70,
+          "name": "createAuthHandler",
+          "kind": 64,
+          "signatures": [
+            {
+              "id": 71,
+              "name": "createAuthHandler",
+              "kind": 4096,
+              "comment": {
+                "summary": [
+                  {"kind": "text", "text": "Creates an Express handler for authentication routes."}
+                ]
+              },
+              "parameters": [
+                {
+                  "id": 72,
+                  "name": "config",
+                  "type": {"type": "reference", "name": "AuthHandlerConfig"}
+                }
+              ],
+              "type": {
+                "type": "reference",
+                "name": "Router"
+              }
+            }
+          ]
+        },
+        {
+          "id": 80,
+          "name": "SessionData",
+          "kind": 4194304,
+          "type": {
+            "type": "intersection",
+            "types": [
+              {"type": "reference", "name": "BaseSession"},
+              {
+                "type": "reflection",
+                "declaration": {
+                  "children": [
+                    {
+                      "name": "userId",
+                      "type": {"type": "intrinsic", "name": "string"}
+                    },
+                    {
+                      "name": "expiresAt",
+                      "type": {"type": "reference", "name": "Date"}
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,155 @@
+<!-- MareAnalytica Docs AI Chat Widget — Epic 13
+     Paste this entire block into Wiki.js:
+       Site Administration > Theme > Code Injection > Body HTML
+     To change the RAGAnything URL, edit the MA_RAG_URL variable below. -->
+<script>
+(function(){
+'use strict';
+var MA_RAG_URL='https://raganything.mareanalytica.com';
+var QUERY_EP=MA_RAG_URL+'/query/stream';
+
+/* ---- Styles ---- */
+var css=document.createElement('style');
+css.textContent=`
+:root{--ma-cp:#2563eb;--ma-cph:#1d4ed8;--ma-bg:#fff;--ma-sf:#f8fafc;--ma-bd:#e2e8f0;--ma-tx:#1e293b;--ma-tm:#64748b;--ma-ub:#2563eb;--ma-ut:#fff;--ma-ab:#f1f5f9;--ma-at:#1e293b;--ma-ib:#fff;--ma-sh:0 20px 60px rgba(0,0,0,.15),0 8px 20px rgba(0,0,0,.08);--ma-r:12px;--ma-f:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif}
+@media(prefers-color-scheme:dark){:root{--ma-cp:#3b82f6;--ma-cph:#60a5fa;--ma-bg:#1e293b;--ma-sf:#0f172a;--ma-bd:#334155;--ma-tx:#f1f5f9;--ma-tm:#94a3b8;--ma-ub:#3b82f6;--ma-ut:#fff;--ma-ab:#334155;--ma-at:#f1f5f9;--ma-ib:#0f172a;--ma-sh:0 20px 60px rgba(0,0,0,.4),0 8px 20px rgba(0,0,0,.2)}}
+.dark{--ma-cp:#3b82f6;--ma-cph:#60a5fa;--ma-bg:#1e293b;--ma-sf:#0f172a;--ma-bd:#334155;--ma-tx:#f1f5f9;--ma-tm:#94a3b8;--ma-ub:#3b82f6;--ma-ut:#fff;--ma-ab:#334155;--ma-at:#f1f5f9;--ma-ib:#0f172a;--ma-sh:0 20px 60px rgba(0,0,0,.4),0 8px 20px rgba(0,0,0,.2)}
+#ma-fab{position:fixed;bottom:24px;right:24px;width:56px;height:56px;border-radius:50%;background:var(--ma-cp);border:none;cursor:pointer;box-shadow:0 4px 16px rgba(37,99,235,.3);display:flex;align-items:center;justify-content:center;transition:transform .2s,background .2s,box-shadow .2s;z-index:99999;padding:0}
+#ma-fab:hover{transform:scale(1.08);background:var(--ma-cph);box-shadow:0 6px 24px rgba(37,99,235,.4)}
+#ma-fab:focus-visible{outline:2px solid var(--ma-cp);outline-offset:3px}
+#ma-fab svg{width:26px;height:26px;fill:#fff}
+#ma-pnl{position:fixed;bottom:92px;right:24px;width:400px;height:520px;max-height:calc(100vh - 120px);max-width:calc(100vw - 32px);background:var(--ma-bg);border:1px solid var(--ma-bd);border-radius:var(--ma-r);box-shadow:var(--ma-sh);display:none;flex-direction:column;overflow:hidden;z-index:99998;font-family:var(--ma-f);color:var(--ma-tx)}
+#ma-pnl.open{display:flex;animation:ma-su .25s ease-out}
+@keyframes ma-su{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+#ma-hdr{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;background:var(--ma-cp);color:#fff;flex-shrink:0}
+#ma-hdr-t{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:600;letter-spacing:-.01em}
+#ma-hdr-t svg{width:18px;height:18px;fill:#fff;flex-shrink:0}
+#ma-cls{background:none;border:none;cursor:pointer;padding:4px;border-radius:6px;display:flex;align-items:center;justify-content:center;transition:background .15s}
+#ma-cls:hover{background:rgba(255,255,255,.15)}
+#ma-cls:focus-visible{outline:2px solid #fff;outline-offset:2px}
+#ma-cls svg{width:18px;height:18px;fill:#fff}
+#ma-msgs{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px;scroll-behavior:smooth}
+.ma-m{max-width:85%;padding:10px 14px;border-radius:10px;font-size:13.5px;line-height:1.55;word-wrap:break-word;white-space:pre-wrap}
+.ma-mu{align-self:flex-end;background:var(--ma-ub);color:var(--ma-ut);border-bottom-right-radius:3px}
+.ma-ma{align-self:flex-start;background:var(--ma-ab);color:var(--ma-at);border-bottom-left-radius:3px}
+.ma-w{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:32px 24px;gap:12px}
+.ma-w svg{width:48px;height:48px;fill:var(--ma-tm);opacity:.5}
+.ma-w p{margin:0;font-size:13px;color:var(--ma-tm);line-height:1.5}
+.ma-w p:first-of-type{font-size:15px;font-weight:600;color:var(--ma-tx)}
+.ma-t{display:flex;gap:4px;align-items:center;padding:12px 14px;align-self:flex-start;background:var(--ma-ab);border-radius:10px;border-bottom-left-radius:3px}
+.ma-td{width:7px;height:7px;border-radius:50%;background:var(--ma-tm);animation:ma-b 1.4s ease-in-out infinite}
+.ma-td:nth-child(2){animation-delay:.16s}
+.ma-td:nth-child(3){animation-delay:.32s}
+@keyframes ma-b{0%,60%,100%{transform:translateY(0);opacity:.4}30%{transform:translateY(-5px);opacity:1}}
+.ma-e{align-self:flex-start;background:#fef2f2;color:#991b1b;border:1px solid #fecaca;padding:10px 14px;border-radius:10px;font-size:13px;max-width:85%}
+@media(prefers-color-scheme:dark){.ma-e{background:#450a0a;color:#fca5a5;border-color:#7f1d1d}}
+#ma-ia{display:flex;align-items:center;gap:8px;padding:12px 16px;border-top:1px solid var(--ma-bd);background:var(--ma-sf);flex-shrink:0}
+#ma-in{flex:1;padding:10px 14px;border:1px solid var(--ma-bd);border-radius:8px;background:var(--ma-ib);color:var(--ma-tx);font-size:13.5px;font-family:var(--ma-f);outline:none;transition:border-color .15s;min-width:0}
+#ma-in::placeholder{color:var(--ma-tm)}
+#ma-in:focus{border-color:var(--ma-cp)}
+#ma-snd{width:38px;height:38px;border-radius:8px;background:var(--ma-cp);border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:background .15s,opacity .15s;padding:0}
+#ma-snd:hover:not(:disabled){background:var(--ma-cph)}
+#ma-snd:disabled{opacity:.5;cursor:not-allowed}
+#ma-snd:focus-visible{outline:2px solid var(--ma-cp);outline-offset:2px}
+#ma-snd svg{width:18px;height:18px;fill:#fff}
+@media(max-width:480px){#ma-pnl{bottom:0;right:0;width:100vw;height:100vh;max-height:100vh;max-width:100vw;border-radius:0;border:none}#ma-fab{bottom:16px;right:16px;width:50px;height:50px}}
+`;
+document.head.appendChild(css);
+
+/* ---- DOM ---- */
+var fab=document.createElement('button');
+fab.id='ma-fab';
+fab.setAttribute('aria-label','Open AI chat assistant');
+fab.title='Ask about our codebase';
+fab.innerHTML='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H5.17L4 17.17V4h16v12z"/><circle cx="9" cy="10" r="1.2"/><circle cx="15" cy="10" r="1.2"/><circle cx="12" cy="10" r="1.2"/></svg>';
+
+var pnl=document.createElement('div');
+pnl.id='ma-pnl';
+pnl.setAttribute('role','dialog');
+pnl.setAttribute('aria-label','AI chat assistant');
+pnl.innerHTML=
+'<div id="ma-hdr">'+
+  '<div id="ma-hdr-t">'+
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2L9.19 8.63 2 9.24l5.46 4.73L5.82 21 12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2z"/></svg>'+
+    'Ask about our codebase'+
+  '</div>'+
+  '<button id="ma-cls" aria-label="Close chat">'+
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>'+
+  '</button>'+
+'</div>'+
+'<div id="ma-msgs" aria-live="polite" aria-relevant="additions">'+
+  '<div class="ma-w">'+
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 5c-1.11-.35-2.33-.5-3.5-.5-1.95 0-4.05.4-5.5 1.5-1.45-1.1-3.55-1.5-5.5-1.5S2.45 4.9 1 6v14.65c0 .25.25.5.5.5.1 0 .15-.05.25-.05C3.1 20.45 5.05 20 6.5 20c1.95 0 4.05.4 5.5 1.5 1.35-.85 3.8-1.5 5.5-1.5 1.65 0 3.35.3 4.75 1.05.1.05.15.05.25.05.25 0 .5-.25.5-.5V6c-.6-.45-1.25-.75-2-1zM21 18.5c-1.1-.35-2.3-.5-3.5-.5-1.7 0-4.15.65-5.5 1.5V8c1.35-.85 3.8-1.5 5.5-1.5 1.2 0 2.4.15 3.5.5v11.5z"/></svg>'+
+    '<p>Knowledge Graph AI Assistant</p>'+
+    '<p>Ask questions about our codebase, architecture, APIs, and infrastructure. Answers are powered by a knowledge graph built from our documentation.</p>'+
+  '</div>'+
+'</div>'+
+'<div id="ma-ia">'+
+  '<input id="ma-in" type="text" placeholder="Ask a question..." autocomplete="off" aria-label="Type your question"/>'+
+  '<button id="ma-snd" aria-label="Send message" disabled>'+
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>'+
+  '</button>'+
+'</div>';
+
+document.body.appendChild(fab);
+document.body.appendChild(pnl);
+
+/* ---- State ---- */
+var isOpen=false,isStreaming=false,welcomeGone=false,ac=null;
+var msgs=document.getElementById('ma-msgs');
+var inp=document.getElementById('ma-in');
+var snd=document.getElementById('ma-snd');
+
+/* ---- Toggle ---- */
+function toggle(){
+  isOpen=!isOpen;
+  if(isOpen){pnl.classList.add('open');fab.setAttribute('aria-expanded','true');inp.focus()}
+  else{pnl.classList.remove('open');fab.setAttribute('aria-expanded','false');if(ac){ac.abort();ac=null;isStreaming=false}}
+}
+fab.addEventListener('click',toggle);
+document.getElementById('ma-cls').addEventListener('click',toggle);
+document.addEventListener('keydown',function(e){if(e.key==='Escape'&&isOpen)toggle()});
+
+/* ---- Input ---- */
+inp.addEventListener('input',function(){snd.disabled=!inp.value.trim()||isStreaming});
+inp.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey&&inp.value.trim()&&!isStreaming){e.preventDefault();send()}});
+snd.addEventListener('click',function(){if(inp.value.trim()&&!isStreaming)send()});
+
+/* ---- Helpers ---- */
+function rmWelcome(){if(welcomeGone)return;var w=msgs.querySelector('.ma-w');if(w)w.remove();welcomeGone=true}
+function scroll(){requestAnimationFrame(function(){msgs.scrollTop=msgs.scrollHeight})}
+function addMsg(t,r){rmWelcome();var d=document.createElement('div');d.className='ma-m ma-m'+r;d.textContent=t;msgs.appendChild(d);scroll();return d}
+function addTyping(){rmWelcome();var d=document.createElement('div');d.className='ma-t';d.id='ma-typ';for(var i=0;i<3;i++){var dt=document.createElement('div');dt.className='ma-td';d.appendChild(dt)}msgs.appendChild(d);scroll()}
+function rmTyping(){var t=document.getElementById('ma-typ');if(t)t.remove()}
+function addErr(t){var d=document.createElement('div');d.className='ma-e';d.textContent=t;d.setAttribute('role','alert');msgs.appendChild(d);scroll()}
+
+/* ---- Send + Stream ---- */
+function send(){
+  var q=inp.value.trim();if(!q)return;
+  addMsg(q,'u');inp.value='';snd.disabled=true;isStreaming=true;addTyping();
+  ac=new AbortController();
+  fetch(QUERY_EP,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:q,mode:'mix'}),signal:ac.signal})
+  .then(function(res){
+    if(!res.ok)throw new Error('HTTP '+res.status);
+    rmTyping();
+    var el=document.createElement('div');el.className='ma-m ma-ma';el.textContent='';msgs.appendChild(el);
+    var rd=res.body.getReader(),dec=new TextDecoder(),buf='';
+    function pump(){
+      rd.read().then(function(r){
+        if(r.done){if(buf.trim())pLines(buf,el);fin(el);return}
+        buf+=dec.decode(r.value,{stream:true});
+        var ls=buf.split('\n');buf=ls.pop()||'';
+        for(var i=0;i<ls.length;i++){var l=ls[i].trim();if(l)pLine(l,el)}
+        scroll();pump();
+      }).catch(function(e){if(e.name==='AbortError')return;rmTyping();addErr('Connection lost. Please try again.');isStreaming=false;snd.disabled=!inp.value.trim()});
+    }
+    pump();
+  })
+  .catch(function(e){rmTyping();if(e.name==='AbortError')return;addErr('Could not reach the AI service. Please try again later.');isStreaming=false;snd.disabled=!inp.value.trim()});
+}
+
+function pLines(t,el){var ls=t.split('\n');for(var i=0;i<ls.length;i++){var l=ls[i].trim();if(l)pLine(l,el)}}
+function pLine(l,el){try{var d=JSON.parse(l);if(d.response)el.textContent+=d.response}catch(e){if(l&&l.charAt(0)!=='{')el.textContent+=l}}
+function fin(el){isStreaming=false;ac=null;snd.disabled=!inp.value.trim();if(!el.textContent.trim())el.textContent='I could not generate a response. Please try rephrasing your question.';scroll()}
+})();
+</script>

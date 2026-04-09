@@ -1,0 +1,140 @@
+{
+  "files": [
+    {
+      "name": "payment/v1/payment.proto",
+      "description": "Payment service protocol definitions.",
+      "package": "payment.v1",
+      "services": [
+        {
+          "name": "PaymentService",
+          "description": "Handles payment processing and status queries.",
+          "methods": [
+            {
+              "name": "ProcessPayment",
+              "description": "Execute a payment transaction.",
+              "requestType": "PaymentRequest",
+              "responseType": "PaymentResponse",
+              "requestStreaming": false,
+              "responseStreaming": false
+            },
+            {
+              "name": "GetPaymentStatus",
+              "description": "Query the current status of a payment.",
+              "requestType": "StatusRequest",
+              "responseType": "StatusResponse",
+              "requestStreaming": false,
+              "responseStreaming": false
+            },
+            {
+              "name": "StreamPaymentUpdates",
+              "description": "Subscribe to real-time payment status updates.",
+              "requestType": "StreamRequest",
+              "responseType": "PaymentEvent",
+              "requestStreaming": false,
+              "responseStreaming": true
+            }
+          ]
+        }
+      ],
+      "messages": [
+        {
+          "name": "PaymentRequest",
+          "description": "Request to process a payment.",
+          "fields": [
+            {
+              "name": "amount",
+              "type": "double",
+              "label": "optional",
+              "description": "Amount to charge in minor units."
+            },
+            {
+              "name": "currency",
+              "type": "string",
+              "label": "optional",
+              "description": "ISO 4217 currency code."
+            },
+            {
+              "name": "merchant_id",
+              "type": "string",
+              "label": "optional",
+              "description": "Merchant receiving the payment."
+            },
+            {
+              "name": "reference",
+              "type": "string",
+              "label": "optional",
+              "description": "Idempotency key for the payment."
+            }
+          ]
+        },
+        {
+          "name": "PaymentResponse",
+          "description": "Result of a payment processing attempt.",
+          "fields": [
+            {
+              "name": "transaction_id",
+              "type": "string",
+              "label": "optional",
+              "description": "Unique transaction identifier."
+            },
+            {
+              "name": "status",
+              "type": "PaymentStatus",
+              "label": "optional",
+              "description": "Current payment status."
+            },
+            {
+              "name": "created_at",
+              "type": "google.protobuf.Timestamp",
+              "label": "optional",
+              "description": "When the payment was created."
+            }
+          ]
+        },
+        {
+          "name": "StatusRequest",
+          "description": "",
+          "fields": [
+            {
+              "name": "transaction_id",
+              "type": "string",
+              "label": "optional",
+              "description": ""
+            }
+          ]
+        },
+        {
+          "name": "StatusResponse",
+          "description": "",
+          "fields": [
+            {
+              "name": "status",
+              "type": "PaymentStatus",
+              "label": "optional",
+              "description": ""
+            },
+            {
+              "name": "updated_at",
+              "type": "google.protobuf.Timestamp",
+              "label": "optional",
+              "description": ""
+            }
+          ]
+        }
+      ],
+      "enums": [
+        {
+          "name": "PaymentStatus",
+          "description": "Lifecycle states of a payment.",
+          "values": [
+            {"name": "PAYMENT_STATUS_UNSPECIFIED", "number": 0, "description": "Default unspecified value."},
+            {"name": "PENDING", "number": 1, "description": "Payment is awaiting processing."},
+            {"name": "COMPLETED", "number": 2, "description": "Payment completed successfully."},
+            {"name": "FAILED", "number": 3, "description": "Payment failed."},
+            {"name": "REFUNDED", "number": 4, "description": "Payment was refunded."}
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,113 @@
+name: Doc Pipeline
+
+on:
+  workflow_call:
+    secrets:
+      OPENAI_API_KEY:
+        required: true
+      WIKIJS_API_KEY:
+        required: true
+
+jobs:
+  detect-and-generate:
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect Languages
+        id: detect
+        run: |
+          HAS_GO=false; HAS_TS=false; HAS_PYTHON=false; HAS_PROTO=false; HAS_HELM=false
+
+          [ -f "go.mod" ] && HAS_GO=true
+          [ -f "tsconfig.json" ] && HAS_TS=true
+          ([ -f "pyproject.toml" ] || [ -f "setup.py" ] || [ -f "requirements.txt" ]) && HAS_PYTHON=true
+          find . -name "*.proto" -maxdepth 3 | grep -q . && HAS_PROTO=true
+          [ -f "Chart.yaml" ] && HAS_HELM=true
+
+          echo "has_go=$HAS_GO" >> $GITHUB_OUTPUT
+          echo "has_ts=$HAS_TS" >> $GITHUB_OUTPUT
+          echo "has_python=$HAS_PYTHON" >> $GITHUB_OUTPUT
+          echo "has_proto=$HAS_PROTO" >> $GITHUB_OUTPUT
+          echo "has_helm=$HAS_HELM" >> $GITHUB_OUTPUT
+
+      - name: Install Go doc tools
+        if: steps.detect.outputs.has_go == 'true' || steps.detect.outputs.has_proto == 'true' || steps.detect.outputs.has_helm == 'true'
+        run: |
+          [ "${{ steps.detect.outputs.has_go }}" == "true" ] && go install github.com/princjef/gomarkdoc/cmd/gomarkdoc@latest
+          [ "${{ steps.detect.outputs.has_proto }}" == "true" ] && go install github.com/pseudomuto/protoc-gen-doc/cmd/protoc-gen-doc@latest
+          [ "${{ steps.detect.outputs.has_helm }}" == "true" ] && go install github.com/norwoodj/helm-docs/cmd/helm-docs@latest
+          true
+
+      - name: Install Node doc tools
+        if: steps.detect.outputs.has_ts == 'true'
+        run: npm install -g typedoc typedoc-plugin-markdown
+
+      - name: Install Python doc tools
+        if: steps.detect.outputs.has_python == 'true'
+        run: pip install pydoc-markdown
+
+      - name: Generate Go docs
+        if: steps.detect.outputs.has_go == 'true'
+        run: |
+          mkdir -p docs/go
+          gomarkdoc --output docs/go/packages.md ./...
+
+      - name: Generate TypeScript docs
+        if: steps.detect.outputs.has_ts == 'true'
+        run: |
+          mkdir -p docs/ts
+          npx typedoc --json docs/ts/typedoc.json --entryPointStrategy expand src/ || true
+          npx typedoc --plugin typedoc-plugin-markdown --out docs/ts/markdown src/ || true
+
+      - name: Generate Python docs
+        if: steps.detect.outputs.has_python == 'true'
+        run: |
+          mkdir -p docs/python
+          for pkg in $(find . -name "__init__.py" -maxdepth 3 -exec dirname {} \; | head -5); do
+            module=$(echo "$pkg" | sed 's|^\./||; s|/|.|g')
+            pydoc-markdown -I . -m "$module" > "docs/python/${module}.md" 2>/dev/null || true
+          done
+
+      - name: Generate Protobuf docs
+        if: steps.detect.outputs.has_proto == 'true'
+        run: |
+          mkdir -p docs/proto
+          find . -name "*.proto" -exec protoc --doc_out=docs/proto --doc_opt=json,proto-docs.json {} + || true
+
+      - name: Generate Helm docs
+        if: steps.detect.outputs.has_helm == 'true'
+        run: |
+          mkdir -p docs/helm
+          helm-docs --output-file docs/helm/README.md || true
+
+      - name: Install pipeline dependencies
+        run: pip install httpx
+
+      - name: Transform and ingest into RAGAnything
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python scripts/transform.py docs/ \
+            --repo ${{ github.event.repository.name }} \
+            --commit ${{ github.sha }} | while IFS= read -r doc; do
+            curl -sf -X POST http://raganything.memory.svc.cluster.local:9621/documents/text \
+              -H "Content-Type: application/json" \
+              -d "$doc" || true
+          done
+
+      - name: Generate and publish Wiki.js pages
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          WIKIJS_API_KEY: ${{ secrets.WIKIJS_API_KEY }}
+        run: |
+          python scripts/generate_wiki_pages.py \
+            --repo ${{ github.event.repository.name }} \
+            --docs-dir docs/ \
+            --source-dir . \
+            --raganything-url http://raganything.memory.svc.cluster.local:9621 \
+            --wikijs-url http://wikijs.docs.svc.cluster.local:3000 \
+            --wikijs-api-key "$WIKIJS_API_KEY" \
+            --openai-api-key "$OPENAI_API_KEY"

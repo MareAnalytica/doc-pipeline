@@ -1,0 +1,718 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Docs AI Chat Widget — Preview</title>
+<style>
+/* ------------------------------------------------------------------ */
+/* CSS Variables — theming for light/dark and easy customisation       */
+/* ------------------------------------------------------------------ */
+:root {
+  --ma-chat-primary: #2563eb;
+  --ma-chat-primary-hover: #1d4ed8;
+  --ma-chat-bg: #ffffff;
+  --ma-chat-surface: #f8fafc;
+  --ma-chat-border: #e2e8f0;
+  --ma-chat-text: #1e293b;
+  --ma-chat-text-muted: #64748b;
+  --ma-chat-user-bg: #2563eb;
+  --ma-chat-user-text: #ffffff;
+  --ma-chat-assistant-bg: #f1f5f9;
+  --ma-chat-assistant-text: #1e293b;
+  --ma-chat-input-bg: #ffffff;
+  --ma-chat-shadow: 0 20px 60px rgba(0, 0, 0, 0.15), 0 8px 20px rgba(0, 0, 0, 0.08);
+  --ma-chat-radius: 12px;
+  --ma-chat-font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ma-chat-primary: #3b82f6;
+    --ma-chat-primary-hover: #60a5fa;
+    --ma-chat-bg: #1e293b;
+    --ma-chat-surface: #0f172a;
+    --ma-chat-border: #334155;
+    --ma-chat-text: #f1f5f9;
+    --ma-chat-text-muted: #94a3b8;
+    --ma-chat-user-bg: #3b82f6;
+    --ma-chat-user-text: #ffffff;
+    --ma-chat-assistant-bg: #334155;
+    --ma-chat-assistant-text: #f1f5f9;
+    --ma-chat-input-bg: #0f172a;
+    --ma-chat-shadow: 0 20px 60px rgba(0, 0, 0, 0.4), 0 8px 20px rgba(0, 0, 0, 0.2);
+  }
+}
+
+/* Wiki.js dark theme detection — Wiki.js adds .dark or [data-theme="dark"] */
+.dark :root,
+[data-theme="dark"] :root,
+html.dark {
+  --ma-chat-primary: #3b82f6;
+  --ma-chat-primary-hover: #60a5fa;
+  --ma-chat-bg: #1e293b;
+  --ma-chat-surface: #0f172a;
+  --ma-chat-border: #334155;
+  --ma-chat-text: #f1f5f9;
+  --ma-chat-text-muted: #94a3b8;
+  --ma-chat-user-bg: #3b82f6;
+  --ma-chat-user-text: #ffffff;
+  --ma-chat-assistant-bg: #334155;
+  --ma-chat-assistant-text: #f1f5f9;
+  --ma-chat-input-bg: #0f172a;
+  --ma-chat-shadow: 0 20px 60px rgba(0, 0, 0, 0.4), 0 8px 20px rgba(0, 0, 0, 0.2);
+}
+
+/* ------------------------------------------------------------------ */
+/* Floating action button                                              */
+/* ------------------------------------------------------------------ */
+#ma-chat-fab {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--ma-chat-primary);
+  border: none;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(37, 99, 235, 0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
+  z-index: 99999;
+  padding: 0;
+}
+
+#ma-chat-fab:hover {
+  transform: scale(1.08);
+  background: var(--ma-chat-primary-hover);
+  box-shadow: 0 6px 24px rgba(37, 99, 235, 0.4);
+}
+
+#ma-chat-fab:focus-visible {
+  outline: 2px solid var(--ma-chat-primary);
+  outline-offset: 3px;
+}
+
+#ma-chat-fab svg {
+  width: 26px;
+  height: 26px;
+  fill: #ffffff;
+}
+
+/* ------------------------------------------------------------------ */
+/* Chat panel                                                          */
+/* ------------------------------------------------------------------ */
+#ma-chat-panel {
+  position: fixed;
+  bottom: 92px;
+  right: 24px;
+  width: 400px;
+  height: 520px;
+  max-height: calc(100vh - 120px);
+  max-width: calc(100vw - 32px);
+  background: var(--ma-chat-bg);
+  border: 1px solid var(--ma-chat-border);
+  border-radius: var(--ma-chat-radius);
+  box-shadow: var(--ma-chat-shadow);
+  display: none;
+  flex-direction: column;
+  overflow: hidden;
+  z-index: 99998;
+  font-family: var(--ma-chat-font);
+  color: var(--ma-chat-text);
+}
+
+#ma-chat-panel.open {
+  display: flex;
+  animation: ma-chat-slide-up 0.25s ease-out;
+}
+
+@keyframes ma-chat-slide-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ------------------------------------------------------------------ */
+/* Header                                                              */
+/* ------------------------------------------------------------------ */
+#ma-chat-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  background: var(--ma-chat-primary);
+  color: #ffffff;
+  flex-shrink: 0;
+}
+
+#ma-chat-header-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+#ma-chat-header-title svg {
+  width: 18px;
+  height: 18px;
+  fill: #ffffff;
+  flex-shrink: 0;
+}
+
+#ma-chat-close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease;
+}
+
+#ma-chat-close:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+#ma-chat-close:focus-visible {
+  outline: 2px solid #ffffff;
+  outline-offset: 2px;
+}
+
+#ma-chat-close svg {
+  width: 18px;
+  height: 18px;
+  fill: #ffffff;
+}
+
+/* ------------------------------------------------------------------ */
+/* Messages area                                                       */
+/* ------------------------------------------------------------------ */
+#ma-chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  scroll-behavior: smooth;
+}
+
+.ma-chat-msg {
+  max-width: 85%;
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-size: 13.5px;
+  line-height: 1.55;
+  word-wrap: break-word;
+  white-space: pre-wrap;
+}
+
+.ma-chat-msg-user {
+  align-self: flex-end;
+  background: var(--ma-chat-user-bg);
+  color: var(--ma-chat-user-text);
+  border-bottom-right-radius: 3px;
+}
+
+.ma-chat-msg-assistant {
+  align-self: flex-start;
+  background: var(--ma-chat-assistant-bg);
+  color: var(--ma-chat-assistant-text);
+  border-bottom-left-radius: 3px;
+}
+
+/* Welcome state */
+.ma-chat-welcome {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 32px 24px;
+  gap: 12px;
+}
+
+.ma-chat-welcome svg {
+  width: 48px;
+  height: 48px;
+  fill: var(--ma-chat-text-muted);
+  opacity: 0.5;
+}
+
+.ma-chat-welcome p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ma-chat-text-muted);
+  line-height: 1.5;
+}
+
+.ma-chat-welcome p:first-of-type {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ma-chat-text);
+}
+
+/* Typing indicator */
+.ma-chat-typing {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  padding: 12px 14px;
+  align-self: flex-start;
+  background: var(--ma-chat-assistant-bg);
+  border-radius: 10px;
+  border-bottom-left-radius: 3px;
+}
+
+.ma-chat-typing-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ma-chat-text-muted);
+  animation: ma-chat-bounce 1.4s ease-in-out infinite;
+}
+
+.ma-chat-typing-dot:nth-child(2) { animation-delay: 0.16s; }
+.ma-chat-typing-dot:nth-child(3) { animation-delay: 0.32s; }
+
+@keyframes ma-chat-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+  30% { transform: translateY(-5px); opacity: 1; }
+}
+
+/* Error message */
+.ma-chat-error {
+  align-self: flex-start;
+  background: #fef2f2;
+  color: #991b1b;
+  border: 1px solid #fecaca;
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-size: 13px;
+  max-width: 85%;
+}
+
+@media (prefers-color-scheme: dark) {
+  .ma-chat-error {
+    background: #450a0a;
+    color: #fca5a5;
+    border-color: #7f1d1d;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Input area                                                          */
+/* ------------------------------------------------------------------ */
+#ma-chat-input-area {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--ma-chat-border);
+  background: var(--ma-chat-surface);
+  flex-shrink: 0;
+}
+
+#ma-chat-input {
+  flex: 1;
+  padding: 10px 14px;
+  border: 1px solid var(--ma-chat-border);
+  border-radius: 8px;
+  background: var(--ma-chat-input-bg);
+  color: var(--ma-chat-text);
+  font-size: 13.5px;
+  font-family: var(--ma-chat-font);
+  outline: none;
+  transition: border-color 0.15s ease;
+  min-width: 0;
+}
+
+#ma-chat-input::placeholder {
+  color: var(--ma-chat-text-muted);
+}
+
+#ma-chat-input:focus {
+  border-color: var(--ma-chat-primary);
+}
+
+#ma-chat-send {
+  width: 38px;
+  height: 38px;
+  border-radius: 8px;
+  background: var(--ma-chat-primary);
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 0.15s ease, opacity 0.15s ease;
+  padding: 0;
+}
+
+#ma-chat-send:hover:not(:disabled) {
+  background: var(--ma-chat-primary-hover);
+}
+
+#ma-chat-send:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+#ma-chat-send:focus-visible {
+  outline: 2px solid var(--ma-chat-primary);
+  outline-offset: 2px;
+}
+
+#ma-chat-send svg {
+  width: 18px;
+  height: 18px;
+  fill: #ffffff;
+}
+
+/* ------------------------------------------------------------------ */
+/* Responsive — small screens                                          */
+/* ------------------------------------------------------------------ */
+@media (max-width: 480px) {
+  #ma-chat-panel {
+    bottom: 0;
+    right: 0;
+    width: 100vw;
+    height: 100vh;
+    max-height: 100vh;
+    max-width: 100vw;
+    border-radius: 0;
+    border: none;
+  }
+
+  #ma-chat-fab {
+    bottom: 16px;
+    right: 16px;
+    width: 50px;
+    height: 50px;
+  }
+}
+</style>
+</head>
+<body>
+
+<!-- Floating action button -->
+<button id="ma-chat-fab" aria-label="Open AI chat assistant" title="Ask about our codebase">
+  <!-- SVG: chat bubble with sparkle -->
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H5.17L4 17.17V4h16v12z"/>
+    <circle cx="9" cy="10" r="1.2"/>
+    <circle cx="15" cy="10" r="1.2"/>
+    <circle cx="12" cy="10" r="1.2"/>
+  </svg>
+</button>
+
+<!-- Chat panel -->
+<div id="ma-chat-panel" role="dialog" aria-label="AI chat assistant" aria-modal="false">
+  <!-- Header -->
+  <div id="ma-chat-header">
+    <div id="ma-chat-header-title">
+      <!-- SVG: sparkle / AI icon -->
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 2L9.19 8.63 2 9.24l5.46 4.73L5.82 21 12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2z"/>
+      </svg>
+      Ask about our codebase
+    </div>
+    <button id="ma-chat-close" aria-label="Close chat">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+      </svg>
+    </button>
+  </div>
+
+  <!-- Messages -->
+  <div id="ma-chat-messages" aria-live="polite" aria-relevant="additions">
+    <div class="ma-chat-welcome">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M21 5c-1.11-.35-2.33-.5-3.5-.5-1.95 0-4.05.4-5.5 1.5-1.45-1.1-3.55-1.5-5.5-1.5S2.45 4.9 1 6v14.65c0 .25.25.5.5.5.1 0 .15-.05.25-.05C3.1 20.45 5.05 20 6.5 20c1.95 0 4.05.4 5.5 1.5 1.35-.85 3.8-1.5 5.5-1.5 1.65 0 3.35.3 4.75 1.05.1.05.15.05.25.05.25 0 .5-.25.5-.5V6c-.6-.45-1.25-.75-2-1zM21 18.5c-1.1-.35-2.3-.5-3.5-.5-1.7 0-4.15.65-5.5 1.5V8c1.35-.85 3.8-1.5 5.5-1.5 1.2 0 2.4.15 3.5.5v11.5z"/>
+      </svg>
+      <p>Knowledge Graph AI Assistant</p>
+      <p>Ask questions about our codebase, architecture, APIs, and infrastructure. Answers are powered by a knowledge graph built from our documentation.</p>
+    </div>
+  </div>
+
+  <!-- Input -->
+  <div id="ma-chat-input-area">
+    <input
+      id="ma-chat-input"
+      type="text"
+      placeholder="Ask a question..."
+      autocomplete="off"
+      aria-label="Type your question"
+    />
+    <button id="ma-chat-send" aria-label="Send message" disabled>
+      <!-- SVG: send arrow -->
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
+      </svg>
+    </button>
+  </div>
+</div>
+
+<script>
+(function() {
+  'use strict';
+
+  // ----------------------------------------------------------------
+  // Configuration
+  // ----------------------------------------------------------------
+  var RAGANYTHING_URL = 'https://raganything.mareanalytica.com';
+  var QUERY_ENDPOINT = RAGANYTHING_URL + '/query/stream';
+  var QUERY_MODE = 'mix'; // graph + vector hybrid
+
+  // ----------------------------------------------------------------
+  // DOM references
+  // ----------------------------------------------------------------
+  var fab = document.getElementById('ma-chat-fab');
+  var panel = document.getElementById('ma-chat-panel');
+  var closeBtn = document.getElementById('ma-chat-close');
+  var messages = document.getElementById('ma-chat-messages');
+  var input = document.getElementById('ma-chat-input');
+  var sendBtn = document.getElementById('ma-chat-send');
+
+  var isOpen = false;
+  var isStreaming = false;
+  var welcomeRemoved = false;
+  var abortController = null;
+
+  // ----------------------------------------------------------------
+  // Toggle panel
+  // ----------------------------------------------------------------
+  function togglePanel() {
+    isOpen = !isOpen;
+    if (isOpen) {
+      panel.classList.add('open');
+      fab.setAttribute('aria-expanded', 'true');
+      input.focus();
+    } else {
+      panel.classList.remove('open');
+      fab.setAttribute('aria-expanded', 'false');
+      if (abortController) {
+        abortController.abort();
+        abortController = null;
+        isStreaming = false;
+      }
+    }
+  }
+
+  fab.addEventListener('click', togglePanel);
+  closeBtn.addEventListener('click', togglePanel);
+
+  // Close on Escape
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape' && isOpen) {
+      togglePanel();
+    }
+  });
+
+  // ----------------------------------------------------------------
+  // Input handling
+  // ----------------------------------------------------------------
+  input.addEventListener('input', function() {
+    sendBtn.disabled = !input.value.trim() || isStreaming;
+  });
+
+  input.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' && !e.shiftKey && input.value.trim() && !isStreaming) {
+      e.preventDefault();
+      sendMessage();
+    }
+  });
+
+  sendBtn.addEventListener('click', function() {
+    if (input.value.trim() && !isStreaming) {
+      sendMessage();
+    }
+  });
+
+  // ----------------------------------------------------------------
+  // Message rendering
+  // ----------------------------------------------------------------
+  function removeWelcome() {
+    if (welcomeRemoved) return;
+    var welcome = messages.querySelector('.ma-chat-welcome');
+    if (welcome) welcome.remove();
+    welcomeRemoved = true;
+  }
+
+  function addMessage(text, role) {
+    removeWelcome();
+    var div = document.createElement('div');
+    div.className = 'ma-chat-msg ma-chat-msg-' + role;
+    div.textContent = text;
+    messages.appendChild(div);
+    scrollToBottom();
+    return div;
+  }
+
+  function addTypingIndicator() {
+    removeWelcome();
+    var div = document.createElement('div');
+    div.className = 'ma-chat-typing';
+    div.id = 'ma-chat-typing';
+    for (var i = 0; i < 3; i++) {
+      var dot = document.createElement('div');
+      dot.className = 'ma-chat-typing-dot';
+      div.appendChild(dot);
+    }
+    messages.appendChild(div);
+    scrollToBottom();
+  }
+
+  function removeTypingIndicator() {
+    var typing = document.getElementById('ma-chat-typing');
+    if (typing) typing.remove();
+  }
+
+  function addError(text) {
+    var div = document.createElement('div');
+    div.className = 'ma-chat-error';
+    div.textContent = text;
+    div.setAttribute('role', 'alert');
+    messages.appendChild(div);
+    scrollToBottom();
+  }
+
+  function scrollToBottom() {
+    requestAnimationFrame(function() {
+      messages.scrollTop = messages.scrollHeight;
+    });
+  }
+
+  // ----------------------------------------------------------------
+  // Streaming query
+  // ----------------------------------------------------------------
+  function sendMessage() {
+    var query = input.value.trim();
+    if (!query) return;
+
+    addMessage(query, 'user');
+    input.value = '';
+    sendBtn.disabled = true;
+    isStreaming = true;
+
+    addTypingIndicator();
+
+    abortController = new AbortController();
+
+    fetch(QUERY_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: query, mode: QUERY_MODE }),
+      signal: abortController.signal
+    })
+    .then(function(response) {
+      if (!response.ok) {
+        throw new Error('Server responded with ' + response.status);
+      }
+
+      removeTypingIndicator();
+
+      var assistantDiv = document.createElement('div');
+      assistantDiv.className = 'ma-chat-msg ma-chat-msg-assistant';
+      assistantDiv.textContent = '';
+      messages.appendChild(assistantDiv);
+
+      var reader = response.body.getReader();
+      var decoder = new TextDecoder();
+      var buffer = '';
+
+      function readChunk() {
+        reader.read().then(function(result) {
+          if (result.done) {
+            // Process any remaining buffer
+            if (buffer.trim()) {
+              processLines(buffer, assistantDiv);
+            }
+            finishStreaming(assistantDiv);
+            return;
+          }
+
+          buffer += decoder.decode(result.value, { stream: true });
+
+          // Split on newlines and process complete lines
+          var lines = buffer.split('\n');
+          // Keep the last (potentially incomplete) line in the buffer
+          buffer = lines.pop() || '';
+
+          for (var i = 0; i < lines.length; i++) {
+            var line = lines[i].trim();
+            if (!line) continue;
+            processLine(line, assistantDiv);
+          }
+
+          scrollToBottom();
+          readChunk();
+        }).catch(function(err) {
+          if (err.name === 'AbortError') return;
+          removeTypingIndicator();
+          addError('Connection lost. Please try again.');
+          isStreaming = false;
+          sendBtn.disabled = !input.value.trim();
+        });
+      }
+
+      readChunk();
+    })
+    .catch(function(err) {
+      removeTypingIndicator();
+      if (err.name === 'AbortError') return;
+      addError('Could not reach the AI service. Please try again later.');
+      isStreaming = false;
+      sendBtn.disabled = !input.value.trim();
+    });
+  }
+
+  function processLines(text, el) {
+    var lines = text.split('\n');
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i].trim();
+      if (line) processLine(line, el);
+    }
+  }
+
+  function processLine(line, el) {
+    try {
+      var data = JSON.parse(line);
+      if (data.response) {
+        el.textContent += data.response;
+      }
+    } catch (e) {
+      // Non-JSON line — could be a plain text response or status line.
+      // Append it if it looks like content.
+      if (line && line.charAt(0) !== '{') {
+        el.textContent += line;
+      }
+    }
+  }
+
+  function finishStreaming(el) {
+    isStreaming = false;
+    abortController = null;
+    sendBtn.disabled = !input.value.trim();
+
+    // If the assistant message is empty, show a fallback
+    if (!el.textContent.trim()) {
+      el.textContent = 'I could not generate a response. Please try rephrasing your question.';
+    }
+
+    scrollToBottom();
+  }
+
+})();
+</script>
+</body>
+</html>

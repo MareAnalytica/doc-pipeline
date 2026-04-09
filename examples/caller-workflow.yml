@@ -1,0 +1,19 @@
+# .github/workflows/docs.yml -- add this to any repo that should
+# participate in the RAGAnything Knowledge Platform doc pipeline.
+#
+# This caller workflow triggers the shared reusable workflow hosted
+# in the MareAnalytica/doc-pipeline repository. It runs on every
+# push to main and forwards the required secrets.
+
+name: Documentation Pipeline
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  docs:
+    uses: MareAnalytica/doc-pipeline/.github/workflows/doc-pipeline.yml@main
+    secrets:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      WIKIJS_API_KEY: ${{ secrets.WIKIJS_API_KEY }}
