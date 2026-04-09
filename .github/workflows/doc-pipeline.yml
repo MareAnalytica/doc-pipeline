@@ -160,23 +160,32 @@ jobs:
             exit 0
           fi
 
+          # Convert and ingest each document using temp files (avoids shell arg length limits)
           python3 -c "
-          import json
+          import json, urllib.request, sys
+          count = 0
           for line in open('/tmp/transform-output.jsonl'):
               doc = json.loads(line.strip())
               api_doc = {
                   'text': doc.get('content', ''),
                   'file_source': doc.get('metadata', {}).get('repo', 'unknown') + '/' + doc.get('metadata', {}).get('source_file', 'unknown')
               }
-              print(json.dumps(api_doc))
-          " > /tmp/api-input.jsonl
-
-          while IFS= read -r doc; do
-            echo "Ingesting document..."
-            curl -s -X POST http://raganything.memory.svc.cluster.local:9621/documents/text \
-              -H "Content-Type: application/json" \
-              -d "$doc" -w "\nHTTP %{http_code}\n"
-          done < /tmp/api-input.jsonl
+              body = json.dumps(api_doc).encode()
+              req = urllib.request.Request(
+                  'http://raganything.memory.svc.cluster.local:9621/documents/text',
+                  data=body,
+                  headers={'Content-Type': 'application/json'},
+                  method='POST'
+              )
+              try:
+                  resp = urllib.request.urlopen(req, timeout=30)
+                  result = json.loads(resp.read())
+                  count += 1
+                  print(f'Ingested: {api_doc[\"file_source\"][:60]} -> {result.get(\"status\", \"?\")}')
+              except Exception as e:
+                  print(f'FAILED: {api_doc[\"file_source\"][:60]} -> {e}', file=sys.stderr)
+          print(f'Total ingested: {count}')
+          "
 
       - name: Generate and publish Wiki.js pages
         if: steps.rag_check.outputs.reachable == 'true'
