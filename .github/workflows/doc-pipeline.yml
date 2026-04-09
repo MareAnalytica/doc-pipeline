@@ -80,15 +80,24 @@ jobs:
         continue-on-error: true
         run: |
           mkdir -p docs/go
+          echo "Downloading Go modules..."
+          go mod download 2>&1 || echo "go mod download had warnings"
+          echo "Generating Go docs..."
           gomarkdoc ./... > docs/go/packages.md 2>/dev/null
           if [ ! -s docs/go/packages.md ]; then
+            echo "Root ./... produced no output, trying subdirectories..."
             for dir in ./internal/... ./cmd/... ./pkg/... ./src/...; do
               if ls ${dir%/...} 2>/dev/null | grep -q .; then
+                echo "  Trying $dir"
                 gomarkdoc "$dir" >> docs/go/packages.md 2>/dev/null || true
               fi
             done
           fi
-          echo "Go docs size: $(wc -c < docs/go/packages.md 2>/dev/null || echo 0) bytes"
+          SIZE=$(wc -c < docs/go/packages.md 2>/dev/null || echo 0)
+          echo "Go docs size: ${SIZE} bytes"
+          if [ "$SIZE" -lt 100 ]; then
+            echo "WARNING: Go docs are very small or empty"
+          fi
 
       - name: Generate TypeScript docs
         if: steps.detect.outputs.has_ts == 'true'
