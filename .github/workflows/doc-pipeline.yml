@@ -7,8 +7,6 @@ on:
         required: true
       WIKIJS_API_KEY:
         required: true
-      REPO_ACCESS_TOKEN:
-        required: false
 
 jobs:
   detect-and-generate:
@@ -59,6 +57,7 @@ jobs:
           echo "has_python=$HAS_PYTHON" >> $GITHUB_OUTPUT
           echo "has_proto=$HAS_PROTO" >> $GITHUB_OUTPUT
           echo "has_helm=$HAS_HELM" >> $GITHUB_OUTPUT
+          echo "Detected: go=$HAS_GO ts=$HAS_TS python=$HAS_PYTHON proto=$HAS_PROTO helm=$HAS_HELM"
 
       - name: Install Go doc tools
         if: steps.detect.outputs.has_go == 'true' || steps.detect.outputs.has_proto == 'true' || steps.detect.outputs.has_helm == 'true'
@@ -81,7 +80,6 @@ jobs:
         continue-on-error: true
         run: |
           mkdir -p docs/go
-          # Try ./... first, fall back to common Go source directories
           gomarkdoc ./... > docs/go/packages.md 2>/dev/null
           if [ ! -s docs/go/packages.md ]; then
             for dir in ./internal/... ./cmd/... ./pkg/... ./src/...; do
@@ -127,38 +125,58 @@ jobs:
       - name: Install pipeline dependencies
         run: pip3 install httpx
 
+      - name: Test RAGAnything connectivity
+        id: rag_check
+        run: |
+          echo "Testing RAGAnything at raganything.memory.svc.cluster.local:9621..."
+          if curl -sf http://raganything.memory.svc.cluster.local:9621/health --connect-timeout 5 -o /dev/null; then
+            echo "RAGAnything is reachable"
+            echo "reachable=true" >> $GITHUB_OUTPUT
+          else
+            echo "WARNING: RAGAnything is NOT reachable from this runner"
+            echo "reachable=false" >> $GITHUB_OUTPUT
+            echo "Trying alternate DNS..."
+            getent hosts raganything.memory.svc.cluster.local || echo "DNS resolution failed"
+            curl -sv http://raganything.memory.svc.cluster.local:9621/health --connect-timeout 5 2>&1 || true
+          fi
+
       - name: Transform and ingest into RAGAnything
-        continue-on-error: true
+        if: steps.rag_check.outputs.reachable == 'true'
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          echo "=== Generating transform output ==="
           python3 .doc-pipeline/scripts/transform.py docs/ \
             --repo ${{ github.event.repository.name }} \
             --commit ${{ github.sha }} > /tmp/transform-output.jsonl
-          DOC_COUNT=$(wc -l < /tmp/transform-output.jsonl)
-          echo "=== Transform produced ${DOC_COUNT} documents ==="
 
-          # Convert transform output (content/metadata) to RAGAnything API format (text/file_source)
+          DOC_COUNT=$(wc -l < /tmp/transform-output.jsonl)
+          echo "Transform produced ${DOC_COUNT} documents"
+
+          if [ "$DOC_COUNT" -eq 0 ]; then
+            echo "No documents to ingest"
+            exit 0
+          fi
+
           python3 -c "
-          import json, sys
+          import json
           for line in open('/tmp/transform-output.jsonl'):
               doc = json.loads(line.strip())
               api_doc = {
                   'text': doc.get('content', ''),
-                  'file_source': f\"{doc.get('metadata', {}).get('repo', 'unknown')}/{doc.get('metadata', {}).get('source_file', 'unknown')}\"
+                  'file_source': doc.get('metadata', {}).get('repo', 'unknown') + '/' + doc.get('metadata', {}).get('source_file', 'unknown')
               }
               print(json.dumps(api_doc))
           " > /tmp/api-input.jsonl
 
           while IFS= read -r doc; do
-            echo "Ingesting: $(echo "$doc" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get(\"file_source\",\"?\")[:60])')"
+            echo "Ingesting document..."
             curl -s -X POST http://raganything.memory.svc.cluster.local:9621/documents/text \
               -H "Content-Type: application/json" \
-              -d "$doc" -w " HTTP %{http_code}\n" || echo "curl failed"
+              -d "$doc" -w "\nHTTP %{http_code}\n"
           done < /tmp/api-input.jsonl
 
       - name: Generate and publish Wiki.js pages
+        if: steps.rag_check.outputs.reachable == 'true'
         continue-on-error: true
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
