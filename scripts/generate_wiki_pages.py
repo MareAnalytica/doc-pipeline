@@ -317,7 +317,7 @@ async def generate_docs(
                         {"role": "system", "content": SYSTEM_PROMPT},
                         {"role": "user", "content": user_prompt},
                     ],
-                    "max_tokens": 2000,
+                    "max_completion_tokens": 4000,
                     "temperature": 0.3,
                 },
                 timeout=60.0,
