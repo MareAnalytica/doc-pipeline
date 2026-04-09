@@ -80,27 +80,18 @@ jobs:
         continue-on-error: true
         run: |
           mkdir -p docs/go
-          echo "=== Go version ==="
           go version
-          echo "=== Downloading Go modules ==="
-          go mod download 2>&1 | tail -5 || echo "go mod download failed"
-          echo "=== Generating Go docs ==="
-          gomarkdoc ./... > docs/go/packages.md 2>&1
-          GOMARK_EXIT=$?
-          echo "gomarkdoc exit code: $GOMARK_EXIT"
+          go mod download || true
+          # Try ./... first, then fall back to subdirectories
+          gomarkdoc ./... > docs/go/packages.md 2>/dev/null || true
           if [ ! -s docs/go/packages.md ]; then
-            echo "Root ./... produced no output, trying subdirectories..."
             for dir in ./internal/... ./cmd/... ./pkg/... ./src/...; do
               if ls ${dir%/...} 2>/dev/null | grep -q .; then
-                echo "  Trying $dir"
-                gomarkdoc "$dir" >> docs/go/packages.md 2>&1 || true
+                gomarkdoc "$dir" >> docs/go/packages.md 2>/dev/null || true
               fi
             done
           fi
-          SIZE=$(wc -c < docs/go/packages.md 2>/dev/null || echo 0)
-          echo "Go docs size: ${SIZE} bytes"
-          echo "First 200 chars: $(head -c 200 docs/go/packages.md 2>/dev/null)"
-          ls -la docs/go/ 2>/dev/null
+          echo "Go docs: $(wc -c < docs/go/packages.md 2>/dev/null || echo 0) bytes"
 
       - name: Generate TypeScript docs
         if: steps.detect.outputs.has_ts == 'true'
