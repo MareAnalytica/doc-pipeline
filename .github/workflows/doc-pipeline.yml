@@ -256,6 +256,12 @@ jobs:
           if [ "${{ inputs.full_generation }}" == "true" ]; then
             FULL_FLAG="--full"
           fi
+          # Also detect [full-docs] in commit message (works with push events where secrets pass through)
+          COMMIT_MSG=$(git log -1 --pretty=%B 2>/dev/null || echo "")
+          if echo "$COMMIT_MSG" | grep -qi '\[full-docs\]'; then
+            echo "Detected [full-docs] in commit message -- enabling full generation"
+            FULL_FLAG="--full"
+          fi
           python3 .doc-pipeline/scripts/generate_wiki_pages.py \
             --repo ${{ github.event.repository.name }} \
             --docs-dir docs/ \
