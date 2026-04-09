@@ -2,6 +2,11 @@ name: Doc Pipeline
 
 on:
   workflow_call:
+    inputs:
+      full_generation:
+        type: boolean
+        default: false
+        description: "Generate pages for ALL packages, not just changed ones"
     secrets:
       OPENAI_API_KEY:
         required: false
@@ -247,9 +252,24 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           WIKIJS_API_KEY: ${{ secrets.WIKIJS_API_KEY }}
         run: |
+          FULL_FLAG=""
+          if [ "${{ inputs.full_generation }}" == "true" ]; then
+            FULL_FLAG="--full"
+          fi
           python3 .doc-pipeline/scripts/generate_wiki_pages.py \
             --repo ${{ github.event.repository.name }} \
             --docs-dir docs/ \
             --source-dir . \
             --raganything-url http://raganything.memory.svc.cluster.local:9621 \
-            --wikijs-url http://wikijs.docs.svc.cluster.local:3000
+            --wikijs-url http://wikijs.docs.svc.cluster.local:3000 \
+            $FULL_FLAG
+
+      - name: Ingest Wiki.js pages back into RAGAnything
+        if: steps.rag_check.outputs.reachable == 'true'
+        continue-on-error: true
+        env:
+          WIKIJS_API_KEY: ${{ secrets.WIKIJS_API_KEY }}
+        run: |
+          python3 .doc-pipeline/scripts/ingest_wikijs_to_rag.py \
+            --wikijs-url http://wikijs.docs.svc.cluster.local:3000 \
+            --raganything-url http://raganything.memory.svc.cluster.local:9621

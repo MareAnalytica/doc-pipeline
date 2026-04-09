@@ -26,7 +26,9 @@ Usage:
 
 import argparse
 import asyncio
+import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -111,6 +113,79 @@ def map_files_to_packages(changed_files: list[str]) -> list[str]:
         packages.add(directory)
 
     return sorted(packages)
+
+
+# ---------------------------------------------------------------------------
+# Full mode: scan docs/ directory for ALL packages
+# ---------------------------------------------------------------------------
+
+def scan_all_packages(docs_dir: Path) -> list[str]:
+    """Scan the docs/ directory to discover ALL packages/modules.
+
+    Used in --full mode to generate pages for every documented package,
+    not just those that changed in the latest commit.
+
+    Handles each language subdirectory differently:
+      - go/packages.md: Split by package headers
+      - ts/typedoc.json: Parse top-level modules
+      - python/*.md: One module per file
+      - proto/*.json: One group per service/message
+      - helm/*.md: One page per chart
+    """
+    docs_dir = Path(docs_dir)
+    if not docs_dir.exists():
+        return []
+
+    packages: list[str] = []
+
+    # --- Go: split packages.md by package headers ---
+    go_packages_file = docs_dir / "go" / "packages.md"
+    if go_packages_file.is_file():
+        content = go_packages_file.read_text(encoding="utf-8", errors="replace")
+        for line in content.splitlines():
+            # Match lines like "# package auth" or "## internal/justpay/service"
+            match = re.match(r'^#{1,2}\s+(?:package\s+)?(.+)', line)
+            if match:
+                pkg_name = match.group(1).strip()
+                # Skip generic headers that aren't package names
+                if pkg_name and not pkg_name.lower().startswith("table of"):
+                    packages.append(f"go/{pkg_name}")
+
+    # --- TypeScript: parse typedoc.json for top-level modules ---
+    ts_typedoc_file = docs_dir / "ts" / "typedoc.json"
+    if ts_typedoc_file.is_file():
+        try:
+            data = json.loads(
+                ts_typedoc_file.read_text(encoding="utf-8", errors="replace")
+            )
+            children = data.get("children", [])
+            for child in children:
+                name = child.get("name", "")
+                if name:
+                    packages.append(f"ts/{name}")
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    # --- Python: one module per .md file ---
+    python_dir = docs_dir / "python"
+    if python_dir.is_dir():
+        for md_file in sorted(python_dir.glob("*.md")):
+            module_name = md_file.stem.replace("_", ".")
+            packages.append(f"python/{module_name}")
+
+    # --- Protobuf: one group per .json file ---
+    proto_dir = docs_dir / "proto"
+    if proto_dir.is_dir():
+        for json_file in sorted(proto_dir.glob("*.json")):
+            packages.append(f"proto/{json_file.stem}")
+
+    # --- Helm: one page per .md file ---
+    helm_dir = docs_dir / "helm"
+    if helm_dir.is_dir():
+        for md_file in sorted(helm_dir.glob("*.md")):
+            packages.append(f"helm/{md_file.stem}")
+
+    return sorted(set(packages))
 
 
 # ---------------------------------------------------------------------------
@@ -556,6 +631,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="",
         help="OpenAI API key for gpt-5.4-mini (fallback: OPENAI_API_KEY env var)",
     )
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        default=False,
+        help=(
+            "Generate Wiki.js pages for ALL packages in docs/, not just "
+            "those changed in the latest commit."
+        ),
+    )
     args = parser.parse_args(argv)
 
     # Resolve API keys: CLI arg -> env var -> empty string
@@ -591,17 +675,25 @@ async def run(args: argparse.Namespace) -> None:
         )
         return
 
-    changed_files = get_changed_files()
-    if not changed_files:
-        print("No changed files detected. Nothing to generate.")
-        return
+    # ---- Discover packages: full mode scans docs/, incremental uses git diff ----
+    if args.full:
+        packages = scan_all_packages(Path(args.docs_dir))
+        if not packages:
+            print("Full mode: no packages found in docs/ directory. Nothing to generate.")
+            return
+        print(f"Full mode: found {len(packages)} package(s) in docs/: {', '.join(packages)}")
+    else:
+        changed_files = get_changed_files()
+        if not changed_files:
+            print("No changed files detected. Nothing to generate.")
+            return
 
-    packages = map_files_to_packages(changed_files)
-    if not packages:
-        print("No source packages changed. Nothing to generate.")
-        return
+        packages = map_files_to_packages(changed_files)
+        if not packages:
+            print("No source packages changed. Nothing to generate.")
+            return
 
-    print(f"Detected {len(packages)} changed package(s): {', '.join(packages)}")
+        print(f"Detected {len(packages)} changed package(s): {', '.join(packages)}")
 
     docs_dir = Path(args.docs_dir)
     source_dir = Path(args.source_dir)
@@ -650,6 +742,10 @@ async def run(args: argparse.Namespace) -> None:
             published += 1
         else:
             skipped += 1
+
+        # Rate limit in full mode to avoid OpenAI API throttling
+        if args.full:
+            await asyncio.sleep(2)
 
     print(f"\nDone. Published {published} page(s), skipped {skipped}.")
 
