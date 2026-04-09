@@ -199,6 +199,4 @@ jobs:
             --docs-dir docs/ \
             --source-dir . \
             --raganything-url http://raganything.memory.svc.cluster.local:9621 \
-            --wikijs-url http://wikijs.docs.svc.cluster.local:3000 \
-            --wikijs-api-key "${{ secrets.WIKIJS_API_KEY }}" \
-            --openai-api-key "${{ secrets.OPENAI_API_KEY }}"
+            --wikijs-url http://wikijs.docs.svc.cluster.local:3000
