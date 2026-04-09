@@ -194,8 +194,6 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           WIKIJS_API_KEY: ${{ secrets.WIKIJS_API_KEY }}
         run: |
-          echo "OPENAI key length: ${#OPENAI_API_KEY}"
-          echo "WIKIJS key length: ${#WIKIJS_API_KEY}"
           python3 .doc-pipeline/scripts/generate_wiki_pages.py \
             --repo ${{ github.event.repository.name }} \
             --docs-dir docs/ \
