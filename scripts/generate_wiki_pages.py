@@ -410,7 +410,7 @@ async def publish_to_wikijs(
                     "query": WIKIJS_QUERY_PAGE_BY_PATH,
                     "variables": {"path": full_path},
                 },
-                timeout=15.0,
+                timeout=60.0,
             )
             resp.raise_for_status()
             data = resp.json()
@@ -435,7 +435,7 @@ async def publish_to_wikijs(
                             "title": title,
                         },
                     },
-                    timeout=15.0,
+                    timeout=60.0,
                 )
                 resp.raise_for_status()
                 result = (
@@ -468,7 +468,7 @@ async def publish_to_wikijs(
                             "tags": ["auto-generated", "doc-pipeline"],
                         },
                     },
-                    timeout=15.0,
+                    timeout=60.0,
                 )
                 resp.raise_for_status()
                 result = (
