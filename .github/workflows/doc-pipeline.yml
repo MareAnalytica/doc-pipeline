@@ -25,7 +25,7 @@ jobs:
         with:
           repository: MareAnalytica/doc-pipeline
           path: .doc-pipeline
-          token: ${{ secrets.REPO_ACCESS_TOKEN || github.token }}
+          token: ${{ github.token }}
 
       - name: Setup Go
         uses: actions/setup-go@v5
