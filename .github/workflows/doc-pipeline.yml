@@ -116,20 +116,25 @@ jobs:
           helm-docs --output-file docs/helm/README.md || true
 
       - name: Install pipeline dependencies
-        run: pip install httpx
+        run: pip3 install httpx
 
       - name: Transform and ingest into RAGAnything
         continue-on-error: true
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          python .doc-pipeline/scripts/transform.py docs/ \
+          echo "=== Generating transform output ==="
+          python3 .doc-pipeline/scripts/transform.py docs/ \
             --repo ${{ github.event.repository.name }} \
-            --commit ${{ github.sha }} | while IFS= read -r doc; do
-            curl -sf -X POST http://raganything.memory.svc.cluster.local:9621/documents/text \
+            --commit ${{ github.sha }} > /tmp/transform-output.jsonl
+          echo "=== Transform produced $(wc -l < /tmp/transform-output.jsonl) documents ==="
+          cat /tmp/transform-output.jsonl | head -1 | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'First doc: {len(d.get(\"content\",\"\"))} chars, lang={d.get(\"metadata\",{}).get(\"language\",\"?\")}')" || true
+          while IFS= read -r doc; do
+            echo "Ingesting document..."
+            curl -s -X POST http://raganything.memory.svc.cluster.local:9621/documents/text \
               -H "Content-Type: application/json" \
-              -d "$doc" || true
-          done
+              -d "$doc" -w "\nHTTP %{http_code}\n" || echo "curl failed"
+          done < /tmp/transform-output.jsonl
 
       - name: Generate and publish Wiki.js pages
         continue-on-error: true
@@ -137,7 +142,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           WIKIJS_API_KEY: ${{ secrets.WIKIJS_API_KEY }}
         run: |
-          python .doc-pipeline/scripts/generate_wiki_pages.py \
+          python3 .doc-pipeline/scripts/generate_wiki_pages.py \
             --repo ${{ github.event.repository.name }} \
             --docs-dir docs/ \
             --source-dir . \
