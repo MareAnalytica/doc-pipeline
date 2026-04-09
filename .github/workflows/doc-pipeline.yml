@@ -107,8 +107,24 @@ jobs:
         continue-on-error: true
         run: |
           mkdir -p docs/ts
-          npx typedoc --json docs/ts/typedoc.json --entryPointStrategy expand src/ 2>&1 || true
-          npx typedoc --plugin typedoc-plugin-markdown --out docs/ts/markdown src/ 2>&1 || true
+
+          # Determine entry point: use src/ if it exists, otherwise use project root
+          ENTRY_POINT="src/"
+          [ ! -d "src" ] && ENTRY_POINT="."
+
+          # --skipErrorChecking: bypass TS errors from CSS imports, deprecated options, etc.
+          # --entryPointStrategy expand: recursively find all .ts/.tsx files in entry point
+          npx typedoc --json docs/ts/typedoc.json \
+            --entryPointStrategy expand \
+            --skipErrorChecking \
+            "$ENTRY_POINT" 2>&1 || true
+
+          npx typedoc --plugin typedoc-plugin-markdown \
+            --out docs/ts/markdown \
+            --entryPointStrategy expand \
+            --skipErrorChecking \
+            "$ENTRY_POINT" 2>&1 || true
+
           echo "TypeScript docs: $(find docs/ts -type f | wc -l) files, $(du -sh docs/ts 2>/dev/null | cut -f1) total"
 
       - name: Generate Python docs
