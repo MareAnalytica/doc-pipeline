@@ -787,45 +787,25 @@ async def run(args: argparse.Namespace) -> None:
     published = 0
     skipped = 0
 
-    for package in packages:
-        raw_docs = read_docs_for_package(docs_dir, package)
-        source = read_source_for_package(source_dir, package)
+    PACKAGE_TIMEOUT = 120  # seconds -- max time per package before moving on
 
-        if not raw_docs and not source:
-            print(f"Skipping {package}: no docs or source found")
+    for idx, package in enumerate(packages, 1):
+        print(f"[{idx}/{len(packages)}] Processing {package}...", flush=True)
+        try:
+            success = await asyncio.wait_for(
+                _process_one_package(args, docs_dir, source_dir, package),
+                timeout=PACKAGE_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            print(f"  TIMEOUT: >{PACKAGE_TIMEOUT}s, skipping", flush=True)
             skipped += 1
             continue
-
-        # Query RAGAnything for cross-repo graph context
-        graph_context = await query_raganything(
-            args.raganything_url, package, args.repo
-        )
-
-        # Generate prose documentation via OpenAI
-        content = await generate_docs(
-            args.openai_api_key,
-            raw_docs,
-            graph_context,
-            source,
-            package,
-            args.repo,
-        )
-
-        if not content:
-            print(f"Skipping {package}: OpenAI returned empty content")
+        except Exception as exc:
+            print(f"  ERROR: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
             skipped += 1
             continue
-
-        # Publish to Wiki.js
-        page_path = f"{args.repo}/{package.replace('/', '-')}"
-        title = f"{args.repo}: {package}"
-
-        success = await publish_to_wikijs(
-            args.wikijs_url, args.wikijs_api_key, page_path, title, content
-        )
 
         if success:
-            print(f"Published: /{page_path}")
             published += 1
         else:
             skipped += 1
@@ -834,7 +814,54 @@ async def run(args: argparse.Namespace) -> None:
         if args.full:
             await asyncio.sleep(2)
 
-    print(f"\nDone. Published {published} page(s), skipped {skipped}.")
+    print(f"\nDone. Published {published} page(s), skipped {skipped}.", flush=True)
+
+
+async def _process_one_package(args, docs_dir: Path, source_dir: Path, package: str) -> bool:
+    """Process a single package: read docs+source, query RAG, generate prose, publish.
+
+    Returns True if published, False if skipped.
+    """
+    raw_docs = read_docs_for_package(docs_dir, package)
+    source = read_source_for_package(source_dir, package)
+
+    if not raw_docs and not source:
+        print(f"  Skipping: no docs or source found", flush=True)
+        return False
+
+    # Query RAGAnything for cross-repo graph context
+    graph_context = await query_raganything(
+        args.raganything_url, package, args.repo
+    )
+
+    # Generate prose documentation via OpenAI
+    content = await generate_docs(
+        args.openai_api_key,
+        raw_docs,
+        graph_context,
+        source,
+        package,
+        args.repo,
+    )
+
+    if not content:
+        print(f"  Skipping: OpenAI returned empty content", flush=True)
+        return False
+
+    # Publish to Wiki.js
+    page_path = f"{args.repo}/{package.replace('/', '-')}"
+    title = f"{args.repo}: {package}"
+
+    success = await publish_to_wikijs(
+        args.wikijs_url, args.wikijs_api_key, page_path, title, content
+    )
+
+    if success:
+        print(f"  Published: /{page_path}", flush=True)
+        return True
+    else:
+        print(f"  Failed to publish: /{page_path}", flush=True)
+        return False
 
 
 def main() -> None:
