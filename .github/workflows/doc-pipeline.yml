@@ -93,13 +93,23 @@ jobs:
           fi
           echo "Go docs: $(wc -c < docs/go/packages.md 2>/dev/null || echo 0) bytes"
 
+      - name: Install project Node dependencies
+        if: steps.detect.outputs.has_ts == 'true'
+        run: |
+          if [ -f "package-lock.json" ]; then
+            npm ci --ignore-scripts 2>/dev/null || npm install --ignore-scripts
+          elif [ -f "package.json" ]; then
+            npm install --ignore-scripts
+          fi
+
       - name: Generate TypeScript docs
         if: steps.detect.outputs.has_ts == 'true'
         continue-on-error: true
         run: |
           mkdir -p docs/ts
-          npx typedoc --json docs/ts/typedoc.json --entryPointStrategy expand src/ || true
-          npx typedoc --plugin typedoc-plugin-markdown --out docs/ts/markdown src/ || true
+          npx typedoc --json docs/ts/typedoc.json --entryPointStrategy expand src/ 2>&1 || true
+          npx typedoc --plugin typedoc-plugin-markdown --out docs/ts/markdown src/ 2>&1 || true
+          echo "TypeScript docs: $(find docs/ts -type f | wc -l) files, $(du -sh docs/ts 2>/dev/null | cut -f1) total"
 
       - name: Generate Python docs
         if: steps.detect.outputs.has_python == 'true'
