@@ -78,12 +78,14 @@ jobs:
 
       - name: Generate Go docs
         if: steps.detect.outputs.has_go == 'true'
+        continue-on-error: true
         run: |
           mkdir -p docs/go
-          gomarkdoc --output docs/go/packages.md ./...
+          gomarkdoc --output docs/go/packages.md ./... 2>&1 || echo "gomarkdoc failed, continuing"
 
       - name: Generate TypeScript docs
         if: steps.detect.outputs.has_ts == 'true'
+        continue-on-error: true
         run: |
           mkdir -p docs/ts
           npx typedoc --json docs/ts/typedoc.json --entryPointStrategy expand src/ || true
@@ -91,6 +93,7 @@ jobs:
 
       - name: Generate Python docs
         if: steps.detect.outputs.has_python == 'true'
+        continue-on-error: true
         run: |
           mkdir -p docs/python
           for pkg in $(find . -name "__init__.py" -maxdepth 3 -exec dirname {} \; | head -5); do
@@ -100,12 +103,14 @@ jobs:
 
       - name: Generate Protobuf docs
         if: steps.detect.outputs.has_proto == 'true'
+        continue-on-error: true
         run: |
           mkdir -p docs/proto
           find . -name "*.proto" -exec protoc --doc_out=docs/proto --doc_opt=json,proto-docs.json {} + || true
 
       - name: Generate Helm docs
         if: steps.detect.outputs.has_helm == 'true'
+        continue-on-error: true
         run: |
           mkdir -p docs/helm
           helm-docs --output-file docs/helm/README.md || true
@@ -114,6 +119,7 @@ jobs:
         run: pip install httpx
 
       - name: Transform and ingest into RAGAnything
+        continue-on-error: true
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
@@ -126,6 +132,7 @@ jobs:
           done
 
       - name: Generate and publish Wiki.js pages
+        continue-on-error: true
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           WIKIJS_API_KEY: ${{ secrets.WIKIJS_API_KEY }}
