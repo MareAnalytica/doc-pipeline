@@ -487,9 +487,16 @@ async def publish_to_wikijs(
                     return False
                 return True
 
-    except (httpx.HTTPError, httpx.TimeoutException, KeyError, ValueError) as exc:
+    except Exception as exc:
+        detail = str(exc)
+        # Try to get response body for HTTP errors
+        if hasattr(exc, 'response') and exc.response is not None:
+            try:
+                detail = f"{exc} | Response: {exc.response.text[:500]}"
+            except Exception:
+                pass
         print(
-            f"Error: Wiki.js publish failed for {full_path}: {exc}",
+            f"Error: Wiki.js publish failed for {full_path}: {type(exc).__name__}: {detail}",
             file=sys.stderr,
         )
         return False
