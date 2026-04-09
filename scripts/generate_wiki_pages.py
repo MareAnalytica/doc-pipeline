@@ -361,12 +361,14 @@ mutation ($id: Int!, $content: String!, $title: String!) {
 """
 
 WIKIJS_MUTATION_CREATE_PAGE = """
-mutation ($content: String!, $path: String!, $title: String!) {
+mutation ($content: String!, $path: String!, $title: String!, $description: String!, $tags: [String]!) {
   pages {
     create(
       content: $content
+      description: $description
       path: $path
       title: $title
+      tags: $tags
       locale: "en"
       isPublished: true
       isPrivate: false
@@ -460,8 +462,10 @@ async def publish_to_wikijs(
                         "query": WIKIJS_MUTATION_CREATE_PAGE,
                         "variables": {
                             "content": content,
+                            "description": f"Auto-generated documentation for {title}",
                             "path": full_path,
                             "title": title,
+                            "tags": ["auto-generated", "doc-pipeline"],
                         },
                     },
                     timeout=15.0,
