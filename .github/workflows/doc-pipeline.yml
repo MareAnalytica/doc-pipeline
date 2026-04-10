@@ -287,6 +287,44 @@ jobs:
             curl -sv http://raganything.memory.svc.cluster.local:9621/health --connect-timeout 5 2>&1 || true
           fi
 
+      - name: Direct graph injection (deterministic)
+        if: steps.rag_check.outputs.reachable == 'true'
+        continue-on-error: true
+        run: |
+          python3 .doc-pipeline/scripts/transform.py docs/ \
+            --repo ${{ github.event.repository.name }} \
+            --commit ${{ github.sha }} \
+            --output-format graph > /tmp/graph-output.json
+
+          python3 -c "
+          import json, urllib.request, sys
+          data = json.load(open('/tmp/graph-output.json'))
+          base = 'http://raganything.memory.svc.cluster.local:9621'
+
+          created = skipped = 0
+          for ent in data.get('entities', []):
+              body = json.dumps(ent).encode()
+              req = urllib.request.Request(f'{base}/graph/entity/create', data=body, headers={'Content-Type': 'application/json'}, method='POST')
+              try:
+                  urllib.request.urlopen(req, timeout=15)
+                  created += 1
+              except urllib.error.HTTPError as e:
+                  if e.code == 400: skipped += 1
+                  else: print(f'FAIL: {ent[\"entity_name\"]}: {e}', file=sys.stderr)
+          print(f'Entities: {created} created, {skipped} existed')
+
+          rel_ok = 0
+          for rel in data.get('relationships', []):
+              body = json.dumps(rel).encode()
+              req = urllib.request.Request(f'{base}/graph/relation/create', data=body, headers={'Content-Type': 'application/json'}, method='POST')
+              try:
+                  urllib.request.urlopen(req, timeout=15)
+                  rel_ok += 1
+              except Exception as e:
+                  print(f'FAIL rel: {e}', file=sys.stderr)
+          print(f'Relations: {rel_ok} created')
+          "
+
       - name: Transform and ingest into RAGAnything
         if: steps.rag_check.outputs.reachable == 'true'
         env:

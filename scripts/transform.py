@@ -60,6 +60,30 @@ INFRASTRUCTURE_ENTITIES: frozenset[str] = frozenset({
 # Lower-cased version for case-insensitive lookups
 _INFRA_LOWER: frozenset[str] = frozenset(n.lower() for n in INFRASTRUCTURE_ENTITIES)
 
+# ---------------------------------------------------------------------------
+# Language primitives -- never create entities or relationships for these
+# ---------------------------------------------------------------------------
+
+LANGUAGE_PRIMITIVES: frozenset[str] = frozenset({
+    "error", "string", "int", "int64", "float32", "float64", "bool",
+    "nil", "void", "null", "undefined", "any", "number", "byte",
+    "rune", "readonly", "context", "boolean", "object",
+    "Error", "String", "Context", "Promise", "Observable",
+    "Record", "Partial", "Required", "Pick", "Omit",
+    "unknown", "never", "void", "Array", "Map", "Set",
+    "true", "false", "None", "self", "cls",
+    "io.Reader", "io.Writer", "http.Handler", "http.Request",
+    "http.ResponseWriter", "fmt.Stringer", "sync.Mutex",
+    "time.Time", "time.Duration",
+})
+
+_PRIMITIVES_LOWER: frozenset[str] = frozenset(n.lower() for n in LANGUAGE_PRIMITIVES)
+
+
+def _is_primitive(name: str) -> bool:
+    """Return True if *name* is a language primitive that should be skipped."""
+    return name.lower() in _PRIMITIVES_LOWER or name in LANGUAGE_PRIMITIVES
+
 
 def _is_infrastructure(name: str) -> bool:
     """Return True if *name* is a well-known infrastructure entity."""
@@ -86,6 +110,102 @@ def _first_mention(name: str, repo: str, package: str) -> str:
         # Infrastructure -- no parenthetical needed
         return name
     return f"{qname} ({name})"
+
+
+# ---------------------------------------------------------------------------
+# Graph output helpers
+# ---------------------------------------------------------------------------
+
+def _classify_entity_type(name: str, ast_kind: str) -> str:
+    """Determine entity_type from AST kind and naming conventions.
+
+    ast_kind values: "class", "struct", "interface", "function", "method",
+    "enum", "module", "package", "service", "message", "rpc", "type_alias",
+    "variable", "chart", "property", "field".
+    """
+    if ast_kind in ("interface",):
+        return "interface"
+    if ast_kind in ("function", "method", "rpc"):
+        return "function"
+    if ast_kind in ("enum",):
+        return "concept"
+    if ast_kind in ("module", "package", "namespace"):
+        return "module"
+    if ast_kind in ("service",):
+        return "service"
+    if ast_kind in ("message",):
+        return "model"
+    if ast_kind in ("chart",):
+        return "tool"
+    if ast_kind in ("type_alias",):
+        return "concept"
+    # class/struct -- determine from naming convention
+    if ast_kind in ("class", "struct"):
+        upper = name.upper()
+        if any(kw in upper for kw in ("SERVICE", "HANDLER", "CONTROLLER")):
+            return "service"
+        if any(kw in upper for kw in ("REPOSITORY", "STORE", "REPO")):
+            return "repository"
+        if any(kw in upper for kw in ("MODEL", "ENTITY", "SCHEMA")):
+            return "model"
+        return "service"
+    # fallback
+    return "service"
+
+
+def _make_entity(entity_name: str, description: str, entity_type: str,
+                 source_id: str, file_path: str) -> dict:
+    """Build a canonical entity dict."""
+    return {
+        "entity_name": entity_name,
+        "entity_data": {
+            "description": description,
+            "entity_type": entity_type,
+            "source_id": source_id,
+            "file_path": file_path,
+        },
+    }
+
+
+def _make_relationship(source_entity: str, target_entity: str,
+                       description: str, keywords: str,
+                       source_id: str, weight: float = 1.0) -> dict:
+    """Build a canonical relationship dict."""
+    return {
+        "source_entity": source_entity,
+        "target_entity": target_entity,
+        "relation_data": {
+            "description": description,
+            "keywords": keywords,
+            "weight": weight,
+            "source_id": source_id,
+        },
+    }
+
+
+def _deduplicate_entities(entities: list[dict]) -> list[dict]:
+    """Deduplicate entities by entity_name, keeping the first occurrence."""
+    seen: set[str] = set()
+    result: list[dict] = []
+    for e in entities:
+        name = e["entity_name"]
+        if name not in seen:
+            seen.add(name)
+            result.append(e)
+    return result
+
+
+def _deduplicate_relationships(rels: list[dict]) -> list[dict]:
+    """Deduplicate relationships by (source, target, keywords) tuple."""
+    seen: set[tuple[str, str, str]] = set()
+    result: list[dict] = []
+    for r in rels:
+        key = (r["source_entity"], r["target_entity"],
+               r["relation_data"]["keywords"])
+        if key not in seen:
+            seen.add(key)
+            result.append(r)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -390,6 +510,267 @@ def transform_typedoc_json(path: Path, repo: str, commit: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# TypeDoc JSON graph extractor
+# ---------------------------------------------------------------------------
+
+def _make_source_id(repo: str, path: Path) -> str:
+    """Build a source_id from repo and file path.
+
+    Strips leading directories to produce a relative doc path like
+    ``justpay-backend/docs/go/packages.md``.
+    """
+    p = str(path)
+    # If the path contains a known doc-tool directory marker, use from there
+    for marker in ("/ts/", "/go/", "/python/", "/proto/", "/helm/"):
+        idx = p.find(marker)
+        if idx != -1:
+            # Include one parent directory for context (e.g. "docs/go/...")
+            slash_before = p.rfind("/", 0, idx)
+            if slash_before != -1:
+                return f"{repo}/{p[slash_before + 1:]}"
+            return f"{repo}/{p[idx + 1:]}"
+    # Fallback: use just the filename
+    return f"{repo}/{path.name}"
+
+
+def extract_graph_typedoc_json(path: Path, repo: str, commit: str) -> dict:
+    """Extract entity/relationship graph from TypeDoc JSON reflection model."""
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    source_id = _make_source_id(repo, path)
+    file_path = str(path)
+    entities: list[dict] = []
+    relationships: list[dict] = []
+    known_entities: set[str] = set()  # track entity names we've created
+
+    def _walk_typedoc_graph(node: dict, parent_module: str = "") -> None:
+        kind = node.get("kind", 0)
+        name = node.get("name", "unknown")
+        comment = _typedoc_comment_text(node)
+        children = node.get("children", [])
+        is_root = kind == 1
+
+        # Determine the package context
+        pkg = "" if is_root else (name if kind in (_TYPEDOC_KIND_MODULE, _TYPEDOC_KIND_NAMESPACE) else parent_module)
+
+        # Module entity
+        if kind in (_TYPEDOC_KIND_MODULE, _TYPEDOC_KIND_NAMESPACE) and not is_root:
+            qname = qualify_name(name, repo, "")
+            etype = _classify_entity_type(name, "module")
+            entities.append(_make_entity(
+                qname, comment or f"Module {name} in repo {repo}",
+                etype, source_id, file_path,
+            ))
+            known_entities.add(qname)
+
+        for child in children:
+            child_kind = child.get("kind", 0)
+            child_name = child.get("name", "unknown")
+            child_comment = _typedoc_comment_text(child)
+
+            if child_kind == _TYPEDOC_KIND_CLASS:
+                qname = qualify_name(child_name, repo, pkg)
+                etype = _classify_entity_type(child_name, "class")
+                entities.append(_make_entity(
+                    qname, child_comment or f"Class {child_name}",
+                    etype, source_id, file_path,
+                ))
+                known_entities.add(qname)
+
+                # module-exports-symbol
+                if pkg:
+                    mod_qname = qualify_name(pkg, repo, "")
+                    relationships.append(_make_relationship(
+                        mod_qname, qname,
+                        f"Module {pkg} exports {child_name}",
+                        "exports, module-exports-symbol",
+                        source_id,
+                    ))
+
+                # Walk methods -- create relationships only
+                for member in child.get("children", []):
+                    mk = member.get("kind", 0)
+                    mname = member.get("name", "?")
+                    if mk == _TYPEDOC_KIND_METHOD:
+                        relationships.append(_make_relationship(
+                            qname, qname,
+                            f"{child_name} has method {mname}",
+                            "has-method, class-has-method",
+                            source_id,
+                        ))
+                        # Check return types for relationships
+                        for sig in member.get("signatures", []):
+                            ret_type = sig.get("type")
+                            if ret_type:
+                                _extract_type_relationships(
+                                    ret_type, qname, pkg, repo,
+                                    f"{child_name}.{mname} returns",
+                                    "returns, function-returns-type",
+                                    source_id, relationships, known_entities,
+                                )
+                            # Check param types
+                            for param in sig.get("parameters", []):
+                                pt = param.get("type")
+                                if pt:
+                                    _extract_type_relationships(
+                                        pt, qname, pkg, repo,
+                                        f"{child_name}.{mname} accepts",
+                                        "accepts, function-accepts-type",
+                                        source_id, relationships, known_entities,
+                                    )
+
+            elif child_kind == _TYPEDOC_KIND_INTERFACE:
+                qname = qualify_name(child_name, repo, pkg)
+                entities.append(_make_entity(
+                    qname, child_comment or f"Interface {child_name}",
+                    "interface", source_id, file_path,
+                ))
+                known_entities.add(qname)
+
+                if pkg:
+                    mod_qname = qualify_name(pkg, repo, "")
+                    relationships.append(_make_relationship(
+                        mod_qname, qname,
+                        f"Module {pkg} exports {child_name}",
+                        "exports, module-exports-symbol",
+                        source_id,
+                    ))
+
+                # Walk methods on interface -- relationship only
+                for member in child.get("children", []):
+                    mk = member.get("kind", 0)
+                    mname = member.get("name", "?")
+                    if mk == _TYPEDOC_KIND_METHOD:
+                        relationships.append(_make_relationship(
+                            qname, qname,
+                            f"{child_name} has method {mname}",
+                            "has-method, class-has-method",
+                            source_id,
+                        ))
+
+            elif child_kind == _TYPEDOC_KIND_FUNCTION:
+                qname = qualify_name(child_name, repo, pkg)
+                entities.append(_make_entity(
+                    qname, child_comment or f"Function {child_name}",
+                    "function", source_id, file_path,
+                ))
+                known_entities.add(qname)
+
+                if pkg:
+                    mod_qname = qualify_name(pkg, repo, "")
+                    relationships.append(_make_relationship(
+                        mod_qname, qname,
+                        f"Module {pkg} exports {child_name}",
+                        "exports, module-exports-symbol",
+                        source_id,
+                    ))
+
+                # Extract return type relationships
+                for sig in child.get("signatures", []):
+                    ret_type = sig.get("type")
+                    if ret_type:
+                        _extract_type_relationships(
+                            ret_type, qname, pkg, repo,
+                            f"{child_name} returns",
+                            "returns, function-returns-type",
+                            source_id, relationships, known_entities,
+                        )
+                    for param in sig.get("parameters", []):
+                        pt = param.get("type")
+                        if pt:
+                            _extract_type_relationships(
+                                pt, qname, pkg, repo,
+                                f"{child_name} accepts",
+                                "accepts, function-accepts-type",
+                                source_id, relationships, known_entities,
+                            )
+
+            elif child_kind == _TYPEDOC_KIND_ENUM:
+                qname = qualify_name(child_name, repo, pkg)
+                entities.append(_make_entity(
+                    qname, child_comment or f"Enum {child_name}",
+                    "concept", source_id, file_path,
+                ))
+                known_entities.add(qname)
+
+                if pkg:
+                    mod_qname = qualify_name(pkg, repo, "")
+                    relationships.append(_make_relationship(
+                        mod_qname, qname,
+                        f"Module {pkg} exports {child_name}",
+                        "exports, module-exports-symbol",
+                        source_id,
+                    ))
+
+            elif child_kind == _TYPEDOC_KIND_TYPE_ALIAS:
+                # Only create entity if it's not a primitive wrapper
+                type_node = child.get("type", {})
+                type_str = _typedoc_type_to_str(type_node)
+                if not _is_primitive(type_str):
+                    qname = qualify_name(child_name, repo, pkg)
+                    entities.append(_make_entity(
+                        qname, child_comment or f"Type alias {child_name} = {type_str}",
+                        "concept", source_id, file_path,
+                    ))
+                    known_entities.add(qname)
+
+            elif child_kind in (_TYPEDOC_KIND_MODULE, _TYPEDOC_KIND_NAMESPACE):
+                _walk_typedoc_graph(child, pkg)
+
+    _walk_typedoc_graph(data)
+
+    return {
+        "entities": _deduplicate_entities(entities),
+        "relationships": _deduplicate_relationships(relationships),
+    }
+
+
+def _extract_type_relationships(
+    type_node: dict, source_qname: str, pkg: str, repo: str,
+    desc_prefix: str, keywords: str, source_id: str,
+    relationships: list[dict], known_entities: set[str],
+) -> None:
+    """Extract relationships from TypeDoc type references to known entities."""
+    if type_node is None:
+        return
+    kind = type_node.get("type", "")
+    if kind == "reference":
+        ref_name = type_node.get("name", "")
+        if ref_name and not _is_primitive(ref_name) and not _is_infrastructure(ref_name):
+            target_qname = qualify_name(ref_name, repo, pkg)
+            # Only create relationship if target is a known entity
+            if target_qname in known_entities:
+                relationships.append(_make_relationship(
+                    source_qname, target_qname,
+                    f"{desc_prefix} {ref_name}",
+                    keywords, source_id,
+                ))
+        # Recurse into type arguments
+        for arg in type_node.get("typeArguments", []):
+            _extract_type_relationships(
+                arg, source_qname, pkg, repo,
+                desc_prefix, keywords, source_id,
+                relationships, known_entities,
+            )
+    elif kind == "array":
+        elem = type_node.get("elementType")
+        if elem:
+            _extract_type_relationships(
+                elem, source_qname, pkg, repo,
+                desc_prefix, keywords, source_id,
+                relationships, known_entities,
+            )
+    elif kind in ("union", "intersection"):
+        for sub in type_node.get("types", []):
+            _extract_type_relationships(
+                sub, source_qname, pkg, repo,
+                desc_prefix, keywords, source_id,
+                relationships, known_entities,
+            )
+
+
+# ---------------------------------------------------------------------------
 # gomarkdoc Markdown transformer
 # ---------------------------------------------------------------------------
 
@@ -652,6 +1033,263 @@ def _go_parse_params(params_raw: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# gomarkdoc graph extractor
+# ---------------------------------------------------------------------------
+
+def extract_graph_gomarkdoc(path: Path, repo: str, commit: str) -> dict:
+    """Extract entity/relationship graph from gomarkdoc markdown."""
+    text = path.read_text(encoding="utf-8")
+    source_id = _make_source_id(repo, path)
+    file_path = str(path)
+    entities: list[dict] = []
+    relationships: list[dict] = []
+    known_entities: set[str] = set()
+
+    current_package = ""
+    current_type = ""
+
+    # Regex patterns (same as prose transformer)
+    pkg_header = re.compile(r"^#\s+(?:package\s+)?(\S+)", re.IGNORECASE)
+    type_header = re.compile(r"^##\s+type\s+(\w+)", re.IGNORECASE)
+    func_header = re.compile(r"^##\s+func\s+(\w+)", re.IGNORECASE)
+    method_header = re.compile(
+        r"^###\s+func\s+\(?(\w+)\s+\*?(\w+)\)?\s+(\w+)", re.IGNORECASE
+    )
+    method_header_alt = re.compile(
+        r"^###\s+func\s+\(\*?(\w+)\)\s+(\w+)", re.IGNORECASE
+    )
+    standalone_func_under_type = re.compile(r"^###\s+func\s+(\w+)", re.IGNORECASE)
+
+    in_code_block = False
+    code_lines: list[str] = []
+    pending_entity = ""
+    pending_kind = ""
+
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+
+        # Track code blocks
+        if stripped.startswith("```"):
+            if in_code_block:
+                in_code_block = False
+                code_text = "\n".join(code_lines)
+                # Extract struct field references from code blocks
+                _gomarkdoc_extract_graph_from_code(
+                    code_text, current_package, current_type,
+                    pending_entity, pending_kind, repo, source_id, file_path,
+                    entities, relationships, known_entities,
+                )
+                code_lines = []
+            else:
+                in_code_block = True
+                code_lines = []
+            continue
+
+        if in_code_block:
+            code_lines.append(stripped)
+            continue
+
+        # Package header
+        m = pkg_header.match(stripped)
+        if m:
+            current_package = m.group(1)
+            pkg_qname = qualify_name(current_package, repo, "")
+            entities.append(_make_entity(
+                pkg_qname, f"Go package {current_package} in repo {repo}",
+                "module", source_id, file_path,
+            ))
+            known_entities.add(pkg_qname)
+            continue
+
+        # Type header
+        m = type_header.match(stripped)
+        if m:
+            current_type = m.group(1)
+            pending_entity = current_type
+            pending_kind = "type"
+            continue
+
+        # Standalone function header
+        m = func_header.match(stripped)
+        if m:
+            fname = m.group(1)
+            pending_entity = fname
+            pending_kind = "func"
+            current_type = ""
+            # Create function entity
+            qname = qualify_name(fname, repo, current_package)
+            if not _is_primitive(fname):
+                entities.append(_make_entity(
+                    qname, f"Function {fname} in package {current_package}",
+                    "function", source_id, file_path,
+                ))
+                known_entities.add(qname)
+                # module-exports-symbol
+                if current_package:
+                    pkg_qname = qualify_name(current_package, repo, "")
+                    relationships.append(_make_relationship(
+                        pkg_qname, qname,
+                        f"Package {current_package} exports {fname}",
+                        "exports, module-exports-symbol",
+                        source_id,
+                    ))
+            continue
+
+        # Method header (### func (f *Foo) Bar)
+        m = method_header.match(stripped)
+        if m:
+            receiver_type = m.group(2)
+            method_name = m.group(3)
+            current_type = receiver_type
+            pending_entity = method_name
+            pending_kind = "method"
+            # class-has-method relationship
+            parent_qname = qualify_name(receiver_type, repo, current_package)
+            relationships.append(_make_relationship(
+                parent_qname, parent_qname,
+                f"{receiver_type} has method {method_name}",
+                "has-method, class-has-method",
+                source_id,
+            ))
+            continue
+
+        # Alternative method header
+        m = method_header_alt.match(stripped)
+        if m:
+            receiver_type = m.group(1)
+            method_name = m.group(2)
+            current_type = receiver_type
+            pending_entity = method_name
+            pending_kind = "method"
+            parent_qname = qualify_name(receiver_type, repo, current_package)
+            relationships.append(_make_relationship(
+                parent_qname, parent_qname,
+                f"{receiver_type} has method {method_name}",
+                "has-method, class-has-method",
+                source_id,
+            ))
+            continue
+
+        # Standalone func under type
+        m = standalone_func_under_type.match(stripped)
+        if m:
+            fname = m.group(1)
+            pending_entity = fname
+            pending_kind = "func"
+            qname = qualify_name(fname, repo, current_package)
+            if not _is_primitive(fname):
+                entities.append(_make_entity(
+                    qname, f"Function {fname} in package {current_package}",
+                    "function", source_id, file_path,
+                ))
+                known_entities.add(qname)
+            continue
+
+    return {
+        "entities": _deduplicate_entities(entities),
+        "relationships": _deduplicate_relationships(relationships),
+    }
+
+
+def _gomarkdoc_extract_graph_from_code(
+    code: str, package: str, current_type: str,
+    pending_entity: str, pending_kind: str,
+    repo: str, source_id: str, file_path: str,
+    entities: list[dict], relationships: list[dict],
+    known_entities: set[str],
+) -> None:
+    """Extract graph entities/relationships from Go code blocks."""
+    # Type definitions: type Foo struct { ... } or type Foo interface { ... }
+    type_match = re.search(r"type\s+(\w+)\s+(struct|interface)", code)
+    if type_match:
+        name = type_match.group(1)
+        kind = type_match.group(2)
+        qname = qualify_name(name, repo, package)
+        if kind == "interface":
+            etype = "interface"
+        else:
+            etype = _classify_entity_type(name, "struct")
+        entities.append(_make_entity(
+            qname, f"Go {kind} {name} in package {package}",
+            etype, source_id, file_path,
+        ))
+        known_entities.add(qname)
+        # module-exports-symbol
+        if package:
+            pkg_qname = qualify_name(package, repo, "")
+            relationships.append(_make_relationship(
+                pkg_qname, qname,
+                f"Package {package} exports {name}",
+                "exports, module-exports-symbol",
+                source_id,
+            ))
+        # Extract struct fields for type references
+        if kind == "struct":
+            fields = re.findall(r"(\w+)\s+([\w.*\[\]]+)", code)
+            for fname, ftype in fields:
+                if fname in ("type", "struct", "interface", name):
+                    continue
+                # Clean the type and check if it's a reference
+                clean_type = ftype.strip("*[]")
+                if clean_type and not _is_primitive(clean_type):
+                    target_qname = qualify_name(clean_type, repo, package)
+                    if target_qname in known_entities:
+                        relationships.append(_make_relationship(
+                            qname, target_qname,
+                            f"{name} references {clean_type} via field {fname}",
+                            "references, field-type",
+                            source_id,
+                        ))
+        return
+
+    # Function signatures
+    func_matches = re.finditer(
+        r"func\s+(?:\((\w+)\s+\*?(\w+)\)\s+)?(\w+)\(([^)]*)\)\s*(.*)", code
+    )
+    for fm in func_matches:
+        receiver_type = fm.group(2)
+        func_name = fm.group(3)
+        returns_raw = fm.group(5).strip().strip("() ")
+
+        if receiver_type:
+            # Method -- relationship only
+            parent_qname = qualify_name(receiver_type, repo, package)
+            relationships.append(_make_relationship(
+                parent_qname, parent_qname,
+                f"{receiver_type} has method {func_name}",
+                "has-method, class-has-method",
+                source_id,
+            ))
+            # Check return type for reference
+            if returns_raw and not _is_primitive(returns_raw):
+                clean_ret = returns_raw.strip("*[]").split(",")[0].strip()
+                if clean_ret and not _is_primitive(clean_ret):
+                    target_qname = qualify_name(clean_ret, repo, package)
+                    if target_qname in known_entities:
+                        relationships.append(_make_relationship(
+                            parent_qname, target_qname,
+                            f"{receiver_type}.{func_name} returns {clean_ret}",
+                            "returns, function-returns-type",
+                            source_id,
+                        ))
+        else:
+            # Standalone function -- entity already created from header
+            if func_name and not _is_primitive(func_name):
+                qname = qualify_name(func_name, repo, package)
+                if returns_raw and not _is_primitive(returns_raw):
+                    clean_ret = returns_raw.strip("*[]").split(",")[0].strip()
+                    if clean_ret and not _is_primitive(clean_ret):
+                        target_qname = qualify_name(clean_ret, repo, package)
+                        if target_qname in known_entities:
+                            relationships.append(_make_relationship(
+                                qname, target_qname,
+                                f"{func_name} returns {clean_ret}",
+                                "returns, function-returns-type",
+                                source_id,
+                            ))
+
+
+# ---------------------------------------------------------------------------
 # pydoc-markdown transformer
 # ---------------------------------------------------------------------------
 
@@ -890,6 +1528,164 @@ def _python_parse_params(params_raw: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# pydoc-markdown graph extractor
+# ---------------------------------------------------------------------------
+
+def extract_graph_pydoc_markdown(path: Path, repo: str, commit: str) -> dict:
+    """Extract entity/relationship graph from pydoc-markdown output."""
+    text = path.read_text(encoding="utf-8")
+    source_id = _make_source_id(repo, path)
+    file_path = str(path)
+    entities: list[dict] = []
+    relationships: list[dict] = []
+    known_entities: set[str] = set()
+
+    current_module = path.stem
+    current_class = ""
+
+    # Create module entity
+    mod_qname = qualify_name(current_module, repo, "")
+    entities.append(_make_entity(
+        mod_qname, f"Python module {current_module} in repo {repo}",
+        "module", source_id, file_path,
+    ))
+    known_entities.add(mod_qname)
+
+    in_code_block = False
+    code_lines: list[str] = []
+
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+
+        # Track code blocks
+        if stripped.startswith("```"):
+            if in_code_block:
+                in_code_block = False
+                code_text = "\n".join(code_lines)
+                _pydoc_extract_graph_from_code(
+                    code_text, current_module, current_class,
+                    repo, source_id, file_path,
+                    entities, relationships, known_entities,
+                )
+                code_lines = []
+            else:
+                in_code_block = True
+                code_lines = []
+            continue
+
+        if in_code_block:
+            code_lines.append(stripped)
+            continue
+
+        # Headers
+        if stripped.startswith("#"):
+            cm = re.match(r"^#+\s+(?:class\s+)?(\w+)\s*(?:Objects)?$", stripped)
+            if cm:
+                name = cm.group(1)
+                if name[0].isupper():
+                    current_class = name
+                    qname = qualify_name(name, repo, current_module)
+                    etype = _classify_entity_type(name, "class")
+                    entities.append(_make_entity(
+                        qname, f"Class {name} in module {current_module}",
+                        etype, source_id, file_path,
+                    ))
+                    known_entities.add(qname)
+                    # module-exports-symbol
+                    relationships.append(_make_relationship(
+                        mod_qname, qname,
+                        f"Module {current_module} exports {name}",
+                        "exports, module-exports-symbol",
+                        source_id,
+                    ))
+                    continue
+
+            fm = re.match(r"^#+\s+(?:def\s+)?(\w+)$", stripped)
+            if fm:
+                name = fm.group(1)
+                if name[0].islower() or name.startswith("_"):
+                    if current_class:
+                        # Method -- relationship only
+                        class_qname = qualify_name(current_class, repo, current_module)
+                        relationships.append(_make_relationship(
+                            class_qname, class_qname,
+                            f"{current_class} has method {name}",
+                            "has-method, class-has-method",
+                            source_id,
+                        ))
+                    else:
+                        # Standalone function
+                        qname = qualify_name(name, repo, current_module)
+                        if not _is_primitive(name):
+                            entities.append(_make_entity(
+                                qname, f"Function {name} in module {current_module}",
+                                "function", source_id, file_path,
+                            ))
+                            known_entities.add(qname)
+                            relationships.append(_make_relationship(
+                                mod_qname, qname,
+                                f"Module {current_module} exports {name}",
+                                "exports, module-exports-symbol",
+                                source_id,
+                            ))
+
+    return {
+        "entities": _deduplicate_entities(entities),
+        "relationships": _deduplicate_relationships(relationships),
+    }
+
+
+def _pydoc_extract_graph_from_code(
+    code: str, module: str, current_class: str,
+    repo: str, source_id: str, file_path: str,
+    entities: list[dict], relationships: list[dict],
+    known_entities: set[str],
+) -> None:
+    """Extract graph entities/relationships from Python code blocks."""
+    # Class definitions with inheritance
+    cm = re.search(r"class\s+(\w+)\s*(?:\(([^)]*)\))?:", code)
+    if cm:
+        name = cm.group(1)
+        bases = cm.group(2)
+        qname = qualify_name(name, repo, module)
+        if bases:
+            for base in bases.split(","):
+                base = base.strip()
+                if base and not _is_primitive(base):
+                    base_qname = qualify_name(base, repo, module)
+                    relationships.append(_make_relationship(
+                        qname, base_qname,
+                        f"{name} inherits from {base}",
+                        "inherits, class-inherits-from",
+                        source_id,
+                    ))
+        return
+
+    # Function/method signatures -- extract return type relationships
+    fm = re.search(r"def\s+(\w+)\s*\(([^)]*)\)\s*(?:->\s*(.+?))?:", code)
+    if fm:
+        func_name = fm.group(1)
+        ret_type = fm.group(3)
+        if func_name in ("__init__", "self", "cls"):
+            return
+        if ret_type:
+            ret_type = ret_type.strip()
+            if not _is_primitive(ret_type):
+                if current_class:
+                    source_qname = qualify_name(current_class, repo, module)
+                else:
+                    source_qname = qualify_name(func_name, repo, module)
+                target_qname = qualify_name(ret_type, repo, module)
+                if target_qname in known_entities:
+                    relationships.append(_make_relationship(
+                        source_qname, target_qname,
+                        f"{func_name} returns {ret_type}",
+                        "returns, function-returns-type",
+                        source_id,
+                    ))
+
+
+# ---------------------------------------------------------------------------
 # protoc-gen-doc JSON transformer
 # ---------------------------------------------------------------------------
 
@@ -1043,6 +1839,126 @@ def _protoc_process_enum(
 
 
 # ---------------------------------------------------------------------------
+# protoc-gen-doc graph extractor
+# ---------------------------------------------------------------------------
+
+def extract_graph_protoc_json(path: Path, repo: str, commit: str) -> dict:
+    """Extract entity/relationship graph from protoc-gen-doc JSON."""
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    source_id = _make_source_id(repo, path)
+    file_path = str(path)
+    entities: list[dict] = []
+    relationships: list[dict] = []
+    known_entities: set[str] = set()
+
+    files = data.get("files", [])
+    if isinstance(data, list):
+        files = data
+
+    for proto_file in files:
+        package = proto_file.get("package", "")
+        fname = proto_file.get("name", "unknown")
+        ns_pkg = package or (fname.rsplit("/", 1)[0] if "/" in fname else "")
+
+        # Services
+        for svc in proto_file.get("services", []):
+            svc_name = svc.get("name", "unknown")
+            desc = svc.get("description", "")
+            svc_qname = qualify_name(svc_name, repo, ns_pkg)
+            entities.append(_make_entity(
+                svc_qname, desc or f"gRPC service {svc_name}",
+                "service", source_id, file_path,
+            ))
+            known_entities.add(svc_qname)
+
+            for method in svc.get("methods", []):
+                method_name = method.get("name", "unknown")
+                req_type = method.get("requestType", "unknown")
+                resp_type = method.get("responseType", "unknown")
+                method_desc = method.get("description", "")
+
+                # service-has-rpc
+                relationships.append(_make_relationship(
+                    svc_qname, svc_qname,
+                    f"{svc_name} has RPC {method_name}",
+                    "has-rpc, service-has-rpc",
+                    source_id,
+                ))
+
+                # rpc-accepts-message (if request type is not a primitive)
+                if not _is_primitive(req_type):
+                    req_qname = qualify_name(req_type, repo, ns_pkg)
+                    relationships.append(_make_relationship(
+                        svc_qname, req_qname,
+                        f"RPC {method_name} on {svc_name} accepts {req_type}",
+                        "accepts, rpc-accepts-message",
+                        source_id,
+                    ))
+
+                # rpc-returns-message
+                if not _is_primitive(resp_type):
+                    resp_qname = qualify_name(resp_type, repo, ns_pkg)
+                    relationships.append(_make_relationship(
+                        svc_qname, resp_qname,
+                        f"RPC {method_name} on {svc_name} returns {resp_type}",
+                        "returns, rpc-returns-message",
+                        source_id,
+                    ))
+
+        # Messages
+        for msg in proto_file.get("messages", []):
+            msg_name = msg.get("name", "unknown")
+            desc = msg.get("description", "")
+            msg_qname = qualify_name(msg_name, repo, ns_pkg)
+            entities.append(_make_entity(
+                msg_qname, desc or f"Protobuf message {msg_name}",
+                "model", source_id, file_path,
+            ))
+            known_entities.add(msg_qname)
+
+            # Nested enums
+            for enum in msg.get("enums", []):
+                _protoc_extract_graph_enum(
+                    enum, repo, ns_pkg, source_id, file_path,
+                    entities, known_entities,
+                )
+
+        # Top-level enums
+        for enum in proto_file.get("enums", []):
+            _protoc_extract_graph_enum(
+                enum, repo, ns_pkg, source_id, file_path,
+                entities, known_entities,
+            )
+
+    return {
+        "entities": _deduplicate_entities(entities),
+        "relationships": _deduplicate_relationships(relationships),
+    }
+
+
+def _protoc_extract_graph_enum(
+    enum: dict, repo: str, ns_pkg: str,
+    source_id: str, file_path: str,
+    entities: list[dict], known_entities: set[str],
+) -> None:
+    """Extract a protobuf enum as a concept entity."""
+    enum_name = enum.get("name", "unknown")
+    desc = enum.get("description", "")
+    qname = qualify_name(enum_name, repo, ns_pkg)
+    values = enum.get("values", [])
+    val_names = ", ".join(v.get("name", "?") for v in values) if values else ""
+    description = desc or f"Protobuf enum {enum_name}"
+    if val_names:
+        description += f" with values: {val_names}"
+    entities.append(_make_entity(
+        qname, description, "concept", source_id, file_path,
+    ))
+    known_entities.add(qname)
+
+
+# ---------------------------------------------------------------------------
 # helm-docs Markdown transformer
 # ---------------------------------------------------------------------------
 
@@ -1148,6 +2064,45 @@ def transform_helm_docs(path: Path, repo: str, commit: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# helm-docs graph extractor
+# ---------------------------------------------------------------------------
+
+def extract_graph_helm_docs(path: Path, repo: str, commit: str) -> dict:
+    """Extract entity/relationship graph from helm-docs markdown."""
+    text = path.read_text(encoding="utf-8")
+    source_id = _make_source_id(repo, path)
+    file_path = str(path)
+    entities: list[dict] = []
+
+    chart_name = ""
+    chart_version = ""
+
+    h1 = re.search(r"^#\s+(\S+)", text, re.MULTILINE)
+    if h1:
+        chart_name = h1.group(1).strip()
+
+    ver_badge = re.search(r"Version[:-]\s*([0-9][0-9A-Za-z._-]*)", text)
+    if ver_badge:
+        chart_version = ver_badge.group(1).rstrip(")")
+
+    name = chart_name or path.stem
+    qname = qualify_name(name, repo, "")
+    desc = f"Helm chart {name}"
+    if chart_version:
+        desc += f" version {chart_version}"
+    desc += f" in repo {repo}"
+
+    entities.append(_make_entity(
+        qname, desc, "tool", source_id, file_path,
+    ))
+
+    return {
+        "entities": _deduplicate_entities(entities),
+        "relationships": [],
+    }
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -1158,6 +2113,12 @@ def main() -> None:
     parser.add_argument("docs_dir", help="Directory containing generated docs")
     parser.add_argument("--repo", required=True, help="Repository name")
     parser.add_argument("--commit", default="unknown", help="Commit SHA")
+    parser.add_argument(
+        "--output-format",
+        choices=["prose", "graph", "dual"],
+        default="prose",
+        help="Output format: prose (default, JSONL text), graph (entity/relationship JSON), dual (both)",
+    )
     args = parser.parse_args()
 
     docs = Path(args.docs_dir)
@@ -1165,6 +2126,67 @@ def main() -> None:
         print(f"Error: {docs} is not a directory", file=sys.stderr)
         sys.exit(1)
 
+    # -----------------------------------------------------------------------
+    # Graph output mode
+    # -----------------------------------------------------------------------
+    if args.output_format in ("graph", "dual"):
+        graph_results: dict[str, list] = {"entities": [], "relationships": []}
+
+        # TypeDoc JSON
+        typedoc_path = docs / "ts" / "typedoc.json"
+        if typedoc_path.exists():
+            g = extract_graph_typedoc_json(typedoc_path, args.repo, args.commit)
+            graph_results["entities"].extend(g["entities"])
+            graph_results["relationships"].extend(g["relationships"])
+
+        # gomarkdoc markdown
+        go_dir = docs / "go"
+        if go_dir.is_dir():
+            for md in sorted(go_dir.glob("*.md")):
+                g = extract_graph_gomarkdoc(md, args.repo, args.commit)
+                graph_results["entities"].extend(g["entities"])
+                graph_results["relationships"].extend(g["relationships"])
+
+        # pydoc-markdown
+        python_dir = docs / "python"
+        if python_dir.is_dir():
+            for md in sorted(python_dir.glob("*.md")):
+                g = extract_graph_pydoc_markdown(md, args.repo, args.commit)
+                graph_results["entities"].extend(g["entities"])
+                graph_results["relationships"].extend(g["relationships"])
+
+        # protoc-gen-doc JSON
+        proto_path = docs / "proto" / "proto-docs.json"
+        if proto_path.exists():
+            g = extract_graph_protoc_json(proto_path, args.repo, args.commit)
+            graph_results["entities"].extend(g["entities"])
+            graph_results["relationships"].extend(g["relationships"])
+
+        # helm-docs markdown
+        helm_dir = docs / "helm"
+        if helm_dir.is_dir():
+            for md in sorted(helm_dir.glob("*.md")):
+                g = extract_graph_helm_docs(md, args.repo, args.commit)
+                graph_results["entities"].extend(g["entities"])
+                graph_results["relationships"].extend(g["relationships"])
+
+        # Final deduplication across all sources
+        graph_results["entities"] = _deduplicate_entities(graph_results["entities"])
+        graph_results["relationships"] = _deduplicate_relationships(graph_results["relationships"])
+
+        if args.output_format == "graph":
+            if not graph_results["entities"]:
+                print("Warning: no graph entities produced from input", file=sys.stderr)
+                sys.exit(0)
+            print(json.dumps(graph_results, ensure_ascii=False))
+            return
+
+        # For "dual", print graph JSON on first line, then prose JSONL below
+        print(json.dumps(graph_results, ensure_ascii=False))
+
+    # -----------------------------------------------------------------------
+    # Prose output mode (also used for dual's second half)
+    # -----------------------------------------------------------------------
     results: list[dict] = []
 
     # TypeDoc JSON
