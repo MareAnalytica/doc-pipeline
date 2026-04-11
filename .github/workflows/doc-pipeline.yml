@@ -53,6 +53,9 @@ jobs:
           GO_SRC_ROOT="."; TS_SRC_ROOT="."; PY_SRC_ROOT="."
 
           # Check root AND common subdirectories for language marker files
+          PY_ROOT_COUNT=0
+          PY_BEST_ROOT="."
+          PY_BEST_COUNT=0
           for dir in . backend api frontend src app; do
             if [ -f "$dir/go.mod" ]; then
               HAS_GO=true
@@ -64,9 +67,23 @@ jobs:
             fi
             if [ -f "$dir/pyproject.toml" ] || [ -f "$dir/setup.py" ] || [ -f "$dir/requirements.txt" ]; then
               HAS_PYTHON=true
-              [ "$dir" != "." ] && PY_SRC_ROOT="$dir"
+              if [ "$dir" != "." ]; then
+                PY_ROOT_COUNT=$((PY_ROOT_COUNT + 1))
+                # Track the subdirectory with the most .py files
+                DIR_PY_COUNT=$(find "$dir" -name "*.py" -maxdepth 3 -not -path "*/__pycache__/*" -not -path "*/venv/*" 2>/dev/null | wc -l)
+                if [ "$DIR_PY_COUNT" -gt "$PY_BEST_COUNT" ]; then
+                  PY_BEST_COUNT=$DIR_PY_COUNT
+                  PY_BEST_ROOT="$dir"
+                fi
+              fi
             fi
           done
+          # If multiple subdirs have Python markers, scan from root to get them all
+          if [ "$PY_ROOT_COUNT" -gt 1 ]; then
+            PY_SRC_ROOT="."
+          elif [ "$PY_ROOT_COUNT" -eq 1 ]; then
+            PY_SRC_ROOT="$PY_BEST_ROOT"
+          fi
 
           # Fallback: check for .py files directly if no marker found
           if [ "$HAS_PYTHON" = "false" ]; then
@@ -227,6 +244,22 @@ jobs:
             else
               SRC_ROOT="."
             fi
+          fi
+
+          # If SRC_ROOT is a subdirectory, check if siblings also have .py files
+          if [ "$SRC_ROOT" != "." ]; then
+            PARENT=$(dirname "$SRC_ROOT")
+            for sibling in "$PARENT"/*/; do
+              sibling="${sibling%/}"
+              if [ -d "$sibling" ] && [ "$sibling" != "$SRC_ROOT" ]; then
+                SIBLING_PY=$(find "$sibling" -name "*.py" -maxdepth 3 -not -path "*/__pycache__/*" -not -path "*/venv/*" -not -path "*/node_modules/*" 2>/dev/null | wc -l)
+                if [ "$SIBLING_PY" -gt 0 ]; then
+                  echo "Found $SIBLING_PY .py files in sibling $sibling -- broadening to repo root"
+                  SRC_ROOT="."
+                  break
+                fi
+              fi
+            done
           fi
 
           echo "Python source root: $SRC_ROOT"
