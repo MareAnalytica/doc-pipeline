@@ -15,7 +15,7 @@ on:
 
 jobs:
   detect-and-generate:
-    runs-on: arc-runner-set
+    runs-on: liquidmetal
 
     steps:
       - name: Checkout source repo
